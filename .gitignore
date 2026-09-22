@@ -177,3 +177,25 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# Local robot workspaces and generated research artifacts
+/lerobot/
+/RoboTwin/
+/XLeRobot/
+/calib_param_xlerobot_*/
+/datasets/
+/checkpoints/
+*.bak
+*.parquet
+*.mp4
+*.safetensors
+*.pt
+*.pth
+
+# Local credentials; keep shareable templates
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.p12

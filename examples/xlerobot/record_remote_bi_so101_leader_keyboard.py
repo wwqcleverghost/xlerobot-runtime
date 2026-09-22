@@ -38,8 +38,9 @@ logger = logging.getLogger(__name__)
 NUM_EPISODES = 50
 FPS = 30
 EPISODE_TIME_SEC = 300
-RESET_TIME_SEC = 10
+RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "My task description"
+MAX_ARM_STEP_PER_FRAME = 3.0  # Normalized joint-position units per control frame.
 
 
 ARM_ACTION_MAP = {
@@ -92,6 +93,28 @@ def build_full_robot_action(
 
     return action
 
+def smooth_arm_action(
+    action: dict[str, float],
+    prev_action: dict[str, float],
+    alpha: float = 0.8,
+    max_step_per_frame: float = MAX_ARM_STEP_PER_FRAME,
+) -> dict[str, float]:
+    """Low-pass and limit each arm joint relative to the last sent command."""
+    smoothed = action.copy()
+
+    for key, value in action.items():
+        # Only position commands for the two arms; leave base velocities unchanged.
+        if key.startswith(("left_arm_", "right_arm_")) and key.endswith(".pos"):
+            if key in prev_action:
+                previous = float(prev_action[key])
+                target = float(value)
+                if not np.isfinite(previous) or not np.isfinite(target):
+                    raise ValueError(f"Non-finite arm position for {key}")
+                filtered_delta = alpha * (target - previous)
+                limited_delta = max(-max_step_per_frame, min(max_step_per_frame, filtered_delta))
+                smoothed[key] = previous + limited_delta
+
+    return smoothed
 
 def busy_wait(seconds: float) -> None:
     # Keep a more stable control rate on Windows/macOS, where time.sleep can be coarse.
@@ -136,10 +159,13 @@ def record_loop(
     teleop_action_processor,
     robot_action_processor,
     robot_observation_processor,
+    max_arm_step_per_frame,
 ):
     # One loop iteration corresponds to one recorded control step.
     timestamp = 0.0
     start_episode_t = time.perf_counter()
+
+    prev_action = None
 
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
@@ -170,13 +196,26 @@ def record_loop(
                 observation=obs,
                 action_features=robot.action_features,
             )
-
+            if prev_action is None:
+                # Start from the follower's measured pose so the first command is limited too.
+                arm_keys = [
+                    key for key in act if key.startswith(("left_arm_", "right_arm_")) and key.endswith(".pos")
+                ]
+                missing_obs = [key for key in arm_keys if key not in obs]
+                if missing_obs:
+                    raise KeyError(f"Follower observation is missing arm joints: {missing_obs}")
+                prev_action = {key: float(obs[key]) for key in arm_keys}
+            act = smooth_arm_action(act, prev_action, max_step_per_frame=max_arm_step_per_frame)
             # Keep the standard LeRobot processing hooks even though the default processors
             act_processed_teleop = teleop_action_processor((act, obs))
 
             # to robot
             robot_action_to_send = robot_action_processor((act_processed_teleop, obs))
             sent_action = robot.send_action(robot_action_to_send)
+            prev_action = {
+                key: float(sent_action.get(key, act[key]))
+                for key in prev_action
+            }
 
             if dataset is not None and observation_frame is not None:
                 # Store the teleop action that corresponds to the current observation frame.
@@ -194,8 +233,11 @@ def record_loop(
                 events["stop_recording"] = True
                 break
         except Exception as exc:
-            logger.exception("Recording interrupted, discarding current episode: %s", exc)
-            print(f"录制中断，舍弃本轮数据：{exc}")
+            logger.exception("Control loop interrupted: %s", exc)
+            if dataset is not None:
+                print(f"录制中断，舍弃本轮数据：{exc}")
+            else:
+                print(f"遥操作中断：{exc}")
             events["discard_current_episode"] = True
             events["stop_recording"] = True
             break
@@ -209,24 +251,37 @@ def record_loop(
 def main():
     parser = argparse.ArgumentParser(description="Record datasets for XLerobot using bi-so101 leader + keyboard")
     parser.add_argument("--robot_id", type=str, default="joyandai_xlerobot", help="Robot ID")
-    parser.add_argument("--remote_ip", type=str, default="192.168.200.9", help="Remote robot IP address")
+    parser.add_argument("--remote_ip", type=str, default="192.168.0.243", help="Remote robot IP address")
     parser.add_argument("--leader_id", type=str, default="my_bi_so101_leader", help="Bi leader ID")
-    parser.add_argument("--left_leader_port", type=str, default="COM8", help="Left leader serial port")
-    parser.add_argument("--right_leader_port", type=str, default="COM9", help="Right leader serial port")
+    parser.add_argument("--left_leader_port", type=str, default="/dev/so101_leader_left", help="Left leader serial port")
+    parser.add_argument("--right_leader_port", type=str, default="/dev/so101_leader_right", help="Right leader serial port")
     parser.add_argument("--num_episodes", type=int, default=NUM_EPISODES, help="Number of episodes to record")
     parser.add_argument("--fps", type=int, default=FPS, help="Recording frame rate")
     parser.add_argument("--episode_time_s", type=int, default=EPISODE_TIME_SEC, help="Recording time per episode")
     parser.add_argument("--reset_time_s", type=int, default=RESET_TIME_SEC, help="Reset time between episodes")
     parser.add_argument("--task_description", type=str, default=TASK_DESCRIPTION, help="Task description")
-    parser.add_argument("--repo_id", type=str, required=True, help="HuggingFace dataset repository ID")
+    parser.add_argument(
+        "--max_arm_step_per_frame",
+        type=float,
+        default=MAX_ARM_STEP_PER_FRAME,
+        help="Maximum change per arm joint per frame in normalized position units (default: 3.0)",
+    )
+    parser.add_argument("--repo_id", type=str, help="Dataset repository ID (required when recording)")
+    parser.add_argument("--teleop_only", action="store_true", help="Practice teleoperation without saving a dataset")
     parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume recording into an existing dataset. --num_episodes means additional episodes for this run.",
     )
-    parser.add_argument("--display_data", action="store_true", help="Display data visualization")
+    parser.add_argument("--display_data", action="store_true", default=True, help="Display data visualization")
     parser.add_argument("--verbose", action="store_true", help="Show detailed logs")
     args = parser.parse_args()
+    if not np.isfinite(args.max_arm_step_per_frame) or args.max_arm_step_per_frame <= 0:
+        parser.error("--max_arm_step_per_frame must be a finite positive number")
+    if not args.teleop_only and not args.repo_id:
+        parser.error("--repo_id is required unless --teleop_only is set")
+    if args.teleop_only and args.resume:
+        parser.error("--resume cannot be used with --teleop_only")
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -257,6 +312,41 @@ def main():
     robot.connect()
     leader.connect()
     keyboard.connect()
+
+    if args.teleop_only:
+        listener = None
+        try:
+            listener, events = init_keyboard_listener()
+            if args.display_data:
+                init_rerun(session_name="xlerobot_remote_bi_so101_practice")
+            print("练习模式：不会保存数据。移动主臂即可控制对应的机器人手臂。")
+            print(f"练习时长：{args.episode_time_s} 秒；按 Esc、右方向键或 b 结束。")
+            print("底盘按键：i/k/j/l 平移，u/o 旋转。练习双臂时请勿按这些键。")
+            record_loop(
+                robot=robot,
+                leader=leader,
+                keyboard=keyboard,
+                events=events,
+                fps=args.fps,
+                control_time_s=args.episode_time_s,
+                dataset=None,
+                single_task=args.task_description,
+                display_data=args.display_data,
+                teleop_action_processor=teleop_action_processor,
+                robot_action_processor=robot_action_processor,
+                robot_observation_processor=robot_observation_processor,
+                max_arm_step_per_frame=args.max_arm_step_per_frame,
+            )
+        finally:
+            if listener is not None:
+                listener.stop()
+            if keyboard.is_connected:
+                keyboard.disconnect()
+            if leader.is_connected:
+                leader.disconnect()
+            if robot.is_connected:
+                robot.disconnect()
+        return
 
     if args.resume:
         dataset = LeRobotDataset(args.repo_id, batch_encoding_size=1)
@@ -319,6 +409,7 @@ def main():
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
+                    max_arm_step_per_frame=args.max_arm_step_per_frame,
                 )
 
                 if not events["stop_recording"] and (
@@ -342,6 +433,7 @@ def main():
                         teleop_action_processor=teleop_action_processor,
                         robot_action_processor=robot_action_processor,
                         robot_observation_processor=robot_observation_processor,
+                        max_arm_step_per_frame=args.max_arm_step_per_frame,
                     )
                     clear_phase_exit_event(events)
 

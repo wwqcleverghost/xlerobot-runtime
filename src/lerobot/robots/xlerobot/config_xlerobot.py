@@ -30,8 +30,8 @@ def xlerobot_cameras_config() -> dict[str, CameraConfig]:
          "right_wrist": OpenCVCameraConfig(
              index_or_path="/dev/video4", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),  
-         "head": OpenCVCameraConfig(
-             index_or_path="/dev/video0", fps=30, width=640, height=360, rotation=Cv2Rotation.NO_ROTATION
+         "head(RGDB)": OpenCVCameraConfig(
+             index_or_path="/dev/video0", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),                     
         
         # "head": RealSenseCameraConfig(
