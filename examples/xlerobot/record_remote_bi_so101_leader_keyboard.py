@@ -40,10 +40,7 @@ FPS = 30
 EPISODE_TIME_SEC = 300
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "My task description"
-EMA_ALPHA = 0.5
-# 90 normalized position units/s equals the old 3 units/frame at 30 FPS.
-MAX_ARM_VELOCITY = 300
-TIMING_REPORT_INTERVAL_S = 1.0
+MAX_ARM_STEP_PER_FRAME = 3.0  # Normalized joint-position units per control frame.
 
 
 ARM_ACTION_MAP = {
@@ -96,122 +93,68 @@ def build_full_robot_action(
 
     return action
 
-
 def smooth_arm_action(
     action: dict[str, float],
     prev_action: dict[str, float],
-    dt_s: float,
-    alpha: float = EMA_ALPHA,
-    max_velocity: float = MAX_ARM_VELOCITY,
+    alpha: float = 0.8,
+    max_step_per_frame: float = MAX_ARM_STEP_PER_FRAME,
 ) -> dict[str, float]:
-    """Apply one EMA step, then limit arm-joint velocity using elapsed time."""
-    if not np.isfinite(dt_s) or dt_s <= 0:
-        raise ValueError("dt_s must be finite and positive")
-    if not np.isfinite(alpha) or not 0 < alpha <= 1:
-        raise ValueError("alpha must be in (0, 1]")
-    if not np.isfinite(max_velocity) or max_velocity <= 0:
-        raise ValueError("max_velocity must be finite and positive")
-
+    """Low-pass and limit each arm joint relative to the last sent command."""
     smoothed = action.copy()
-    max_step = max_velocity * dt_s
+
     for key, value in action.items():
         # Only position commands for the two arms; leave base velocities unchanged.
         if key.startswith(("left_arm_", "right_arm_")) and key.endswith(".pos"):
-            if key not in prev_action:
-                raise KeyError(f"Previous command is missing arm joint: {key}")
-            previous = float(prev_action[key])
-            target = float(value)
-            if not np.isfinite(previous) or not np.isfinite(target):
-                raise ValueError(f"Non-finite arm position for {key}")
-            filtered_delta = alpha * (target - previous)
-            limited_delta = max(-max_step, min(max_step, filtered_delta))
-            smoothed[key] = previous + limited_delta
+            if key in prev_action:
+                previous = float(prev_action[key])
+                target = float(value)
+                if not np.isfinite(previous) or not np.isfinite(target):
+                    raise ValueError(f"Non-finite arm position for {key}")
+                filtered_delta = alpha * (target - previous)
+                limited_delta = max(-max_step_per_frame, min(max_step_per_frame, filtered_delta))
+                smoothed[key] = previous + limited_delta
 
     return smoothed
 
 
-class ControlLoopMonitor:
-    """Summarize measured loop timing and follower error once per interval."""
-
-    def __init__(self, target_fps: int):
-        self.target_fps = target_fps
-        self.window_start = time.perf_counter()
-        self.reset()
-
-    def reset(self) -> None:
-        self.frames = 0
-        self.loop_periods: list[float] = []
-        self.send_intervals: list[float] = []
-        self.work_times: list[float] = []
-        self.tracking_errors: list[float] = []
-        self.left_max_error = 0.0
-        self.right_max_error = 0.0
-        self.capped_intervals = 0
-
-    def record_tracking_error(self, observation: dict[str, float], previous_command: dict[str, float]) -> None:
-        for key, command in previous_command.items():
-            if key not in observation:
-                raise KeyError(f"Follower observation is missing arm joint: {key}")
-            measured = float(observation[key])
-            if not np.isfinite(measured) or not np.isfinite(command):
-                raise ValueError(f"Non-finite follower tracking position for {key}")
-            error = abs(measured - command)
-            self.tracking_errors.append(error)
-            if key.startswith("left_arm_"):
-                self.left_max_error = max(self.left_max_error, error)
-            elif key.startswith("right_arm_"):
-                self.right_max_error = max(self.right_max_error, error)
-
-    def record_timing(
-        self,
-        loop_period_s: float | None,
-        send_interval_s: float | None,
-        work_s: float,
-        capped: bool,
-    ) -> None:
-        self.frames += 1
-        self.work_times.append(work_s)
-        if loop_period_s is not None:
-            self.loop_periods.append(loop_period_s)
-        if send_interval_s is not None:
-            self.send_intervals.append(send_interval_s)
-        self.capped_intervals += int(capped)
-
-    def report_if_due(self, now: float, *, force: bool = False) -> None:
-        elapsed = max(now - self.window_start, 1e-9)
-        if not self.frames or (not force and elapsed < TIMING_REPORT_INTERVAL_S):
-            return
-        loop_mean_ms = (
-            1000 * sum(self.loop_periods) / len(self.loop_periods) if self.loop_periods else 0.0
-        )
-        loop_max_ms = 1000 * max(self.loop_periods, default=0.0)
-        send_mean_ms = (
-            1000 * sum(self.send_intervals) / len(self.send_intervals) if self.send_intervals else 0.0
-        )
-        send_max_ms = 1000 * max(self.send_intervals, default=0.0)
-        error_mean = (
-            sum(self.tracking_errors) / len(self.tracking_errors) if self.tracking_errors else 0.0
-        )
-        logger.info(
-            "Control monitor: actual FPS %.1f/target %d; loop dt mean/max %.1f/%.1f ms; "
-            "send dt mean/max %.1f/%.1f ms; work max %.1f ms; stalled dt caps %d; "
-            "follower error mean/max %.2f/%.2f (left max %.2f, right max %.2f) normalized units",
-            self.frames / elapsed,
-            self.target_fps,
-            loop_mean_ms,
-            loop_max_ms,
-            send_mean_ms,
-            send_max_ms,
-            1000 * max(self.work_times),
-            self.capped_intervals,
-            error_mean,
-            max(self.tracking_errors, default=0.0),
-            self.left_max_error,
-            self.right_max_error,
-        )
-        self.window_start = now
-        self.reset()
-
+# wwq 版本的平滑算法（按速度限幅），已停用，改用上面的每帧限幅版本：
+# EMA_ALPHA = 0.5
+# # 90 normalized position units/s equals the old 3 units/frame at 30 FPS.
+# MAX_ARM_VELOCITY = 300
+# TIMING_REPORT_INTERVAL_S = 1.0
+#
+# def smooth_arm_action(
+#     action: dict[str, float],
+#     prev_action: dict[str, float],
+#     dt_s: float,
+#     alpha: float = EMA_ALPHA,
+#     max_velocity: float = MAX_ARM_VELOCITY,
+# ) -> dict[str, float]:
+#     """Apply one EMA step, then limit arm-joint velocity using elapsed time."""
+#     if not np.isfinite(dt_s) or dt_s <= 0:
+#         raise ValueError("dt_s must be finite and positive")
+#     if not np.isfinite(alpha) or not 0 < alpha <= 1:
+#         raise ValueError("alpha must be in (0, 1]")
+#     if not np.isfinite(max_velocity) or max_velocity <= 0:
+#         raise ValueError("max_velocity must be finite and positive")
+#
+#     smoothed = action.copy()
+#     max_step = max_velocity * dt_s
+#     for key, value in action.items():
+#         # Only position commands for the two arms; leave base velocities unchanged.
+#         if key.startswith(("left_arm_", "right_arm_")) and key.endswith(".pos"):
+#             if key not in prev_action:
+#                 raise KeyError(f"Previous command is missing arm joint: {key}")
+#             previous = float(prev_action[key])
+#             target = float(value)
+#             if not np.isfinite(previous) or not np.isfinite(target):
+#                 raise ValueError(f"Non-finite arm position for {key}")
+#             filtered_delta = alpha * (target - previous)
+#             limited_delta = max(-max_step, min(max_step, filtered_delta))
+#             smoothed[key] = previous + limited_delta
+#
+#     return smoothed
+#
 
 def busy_wait(seconds: float) -> None:
     # Keep a more stable control rate on Windows/macOS, where time.sleep can be coarse.
@@ -256,22 +199,16 @@ def record_loop(
     teleop_action_processor,
     robot_action_processor,
     robot_observation_processor,
-    ema_alpha,
-    max_arm_velocity,
+    max_arm_step_per_frame,
 ):
     # One loop iteration corresponds to one recorded control step.
     timestamp = 0.0
     start_episode_t = time.perf_counter()
 
     prev_action = None
-    previous_loop_t = None
-    last_send_t = None
-    monitor = ControlLoopMonitor(target_fps=fps)
 
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
-        loop_period_s = start_loop_t - previous_loop_t if previous_loop_t is not None else None
-        previous_loop_t = start_loop_t
 
         # The global keyboard listener can request "finish episode now".
         if events["exit_early"]:
@@ -282,9 +219,6 @@ def record_loop(
             # Read the follower robot state first so both logging and action processing
             # use the same observation snapshot for this timestep.
             obs = robot.get_observation()
-            if prev_action is not None:
-                # This observation follows the command sent on the previous step.
-                monitor.record_tracking_error(obs, prev_action)
             obs_processed = robot_observation_processor(obs)
 
             observation_frame = None
@@ -311,25 +245,17 @@ def record_loop(
                 if missing_obs:
                     raise KeyError(f"Follower observation is missing arm joints: {missing_obs}")
                 prev_action = {key: float(obs[key]) for key in arm_keys}
-            command_t = time.perf_counter()
-            send_interval_s = command_t - last_send_t if last_send_t is not None else None
-            # A long stall must not turn into a large catch-up movement on one step.
-            max_control_dt_s = 2 / fps
-            control_dt_s = (
-                min(send_interval_s, max_control_dt_s)
-                if send_interval_s is not None
-                else 1 / fps
-            )
-            act = smooth_arm_action(
-                act, prev_action, dt_s=control_dt_s, alpha=ema_alpha, max_velocity=max_arm_velocity
-            )
-            # Keep the standard LeRobot processing hooks.
+            act = smooth_arm_action(act, prev_action, max_step_per_frame=max_arm_step_per_frame)
+            # Keep the standard LeRobot processing hooks even though the default processors
             act_processed_teleop = teleop_action_processor((act, obs))
 
+            # to robot
             robot_action_to_send = robot_action_processor((act_processed_teleop, obs))
             sent_action = robot.send_action(robot_action_to_send)
-            last_send_t = time.perf_counter()
-            prev_action = {key: float(sent_action.get(key, act[key])) for key in prev_action}
+            prev_action = {
+                key: float(sent_action.get(key, act[key]))
+                for key in prev_action
+            }
 
             if dataset is not None and observation_frame is not None:
                 # Store the teleop action that corresponds to the current observation frame.
@@ -357,19 +283,9 @@ def record_loop(
             break
 
         # Run the loop close to the requested recording FPS.
-        work_s = time.perf_counter() - start_loop_t
-        busy_wait(1 / fps - work_s)
-        now = time.perf_counter()
-        monitor.record_timing(
-            loop_period_s,
-            send_interval_s,
-            work_s,
-            send_interval_s is not None and send_interval_s > max_control_dt_s,
-        )
-        monitor.report_if_due(now)
+        dt_s = time.perf_counter() - start_loop_t
+        busy_wait(1 / fps - dt_s)
         timestamp = time.perf_counter() - start_episode_t
-
-    monitor.report_if_due(time.perf_counter(), force=True)
 
 
 def main():
@@ -385,16 +301,10 @@ def main():
     parser.add_argument("--reset_time_s", type=int, default=RESET_TIME_SEC, help="Reset time between episodes")
     parser.add_argument("--task_description", type=str, default=TASK_DESCRIPTION, help="Task description")
     parser.add_argument(
-        "--ema_alpha",
+        "--max_arm_step_per_frame",
         type=float,
-        default=EMA_ALPHA,
-        help="Single EMA factor for arm positions, in (0, 1] (default: 0.8)",
-    )
-    parser.add_argument(
-        "--max_arm_velocity",
-        type=float,
-        default=MAX_ARM_VELOCITY,
-        help="Maximum arm-joint speed in normalized position units per second (default: 90)",
+        default=MAX_ARM_STEP_PER_FRAME,
+        help="Maximum change per arm joint per frame in normalized position units (default: 3.0)",
     )
     parser.add_argument("--repo_id", type=str, help="Dataset repository ID (required when recording)")
     parser.add_argument("--teleop_only", action="store_true", help="Practice teleoperation without saving a dataset")
@@ -406,12 +316,8 @@ def main():
     parser.add_argument("--display_data", action="store_true", default=True, help="Display data visualization")
     parser.add_argument("--verbose", action="store_true", help="Show detailed logs")
     args = parser.parse_args()
-    if args.fps <= 0:
-        parser.error("--fps must be positive")
-    if not np.isfinite(args.ema_alpha) or not 0 < args.ema_alpha <= 1:
-        parser.error("--ema_alpha must be in (0, 1]")
-    if not np.isfinite(args.max_arm_velocity) or args.max_arm_velocity <= 0:
-        parser.error("--max_arm_velocity must be a finite positive number")
+    if not np.isfinite(args.max_arm_step_per_frame) or args.max_arm_step_per_frame <= 0:
+        parser.error("--max_arm_step_per_frame must be a finite positive number")
     if not args.teleop_only and not args.repo_id:
         parser.error("--repo_id is required unless --teleop_only is set")
     if args.teleop_only and args.resume:
@@ -469,8 +375,7 @@ def main():
                 teleop_action_processor=teleop_action_processor,
                 robot_action_processor=robot_action_processor,
                 robot_observation_processor=robot_observation_processor,
-                ema_alpha=args.ema_alpha,
-                max_arm_velocity=args.max_arm_velocity,
+                max_arm_step_per_frame=args.max_arm_step_per_frame,
             )
         finally:
             if listener is not None:
@@ -544,8 +449,7 @@ def main():
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
-                    ema_alpha=args.ema_alpha,
-                    max_arm_velocity=args.max_arm_velocity,
+                    max_arm_step_per_frame=args.max_arm_step_per_frame,
                 )
 
                 if not events["stop_recording"] and (
@@ -569,8 +473,7 @@ def main():
                         teleop_action_processor=teleop_action_processor,
                         robot_action_processor=robot_action_processor,
                         robot_observation_processor=robot_observation_processor,
-                        ema_alpha=args.ema_alpha,
-                        max_arm_velocity=args.max_arm_velocity,
+                        max_arm_step_per_frame=args.max_arm_step_per_frame,
                     )
                     clear_phase_exit_event(events)
 

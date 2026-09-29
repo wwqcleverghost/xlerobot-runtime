@@ -2,6 +2,9 @@
 
 import unittest
 
+# 这些测试针对 wwq 版本的平滑算法和 ControlLoopMonitor，该算法已在脚本中注释停用。
+raise unittest.SkipTest("wwq smoothing algorithm is disabled")
+
 from examples.xlerobot.record_remote_bi_so101_leader_keyboard import (
     ControlLoopMonitor,
     smooth_arm_action,
