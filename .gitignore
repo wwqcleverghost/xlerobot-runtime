@@ -181,7 +181,7 @@ outputs/
 # Local robot workspaces and generated research artifacts
 /lerobot/
 /RoboTwin/
-/XLeRobot/
+/.xlerobot-git-backup/
 /calib_param_xlerobot_*/
 /datasets/
 /checkpoints/
