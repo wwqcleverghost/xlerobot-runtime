@@ -21,18 +21,19 @@ from lerobot.cameras.realsense import RealSenseCamera, RealSenseCameraConfig
 from ..config import RobotConfig
 
 
-def xlerobot_cameras_config() -> dict[str, CameraConfig]:
+def xlerobot_2wheels_cameras_config() -> dict[str, CameraConfig]:
     return {
-         "left_wrist": OpenCVCameraConfig(
-             index_or_path="/dev/camera_left", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-         ),
+        # "left_wrist": OpenCVCameraConfig(
+        #     index_or_path="/dev/video0", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+        # ),
 
-         "right_wrist": OpenCVCameraConfig(
-             index_or_path="/dev/camera_right", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-         ),  
-         "head(RGDB)": OpenCVCameraConfig(
-             index_or_path="/dev/camera_top", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-         ),                     
+        # "right_wrist": OpenCVCameraConfig(
+        #     index_or_path="/dev/video2", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+        # ),  
+
+        # "head(RGDB)": OpenCVCameraConfig(
+        #     index_or_path="/dev/video2", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+        # ),                     
         
         # "head": RealSenseCameraConfig(
         #     serial_number_or_name="125322060037",  # Replace with camera SN
@@ -46,12 +47,12 @@ def xlerobot_cameras_config() -> dict[str, CameraConfig]:
     }
 
 
-@RobotConfig.register_subclass("xlerobot")
+@RobotConfig.register_subclass("xlerobot_2wheels")
 @dataclass
-class XLerobotConfig(RobotConfig):
+class XLerobot2WheelsConfig(RobotConfig):
     
-    port1: str = "/dev/so101_follower_left"  # port to connect to the bus (so101 + head camera)
-    port2: str = "/dev/so101_follower_right"  # port to connect to the bus (same as lekiwi setup)
+    port1: str = "/dev/ttyACM0"  # port to connect to the bus (so101 + head camera)
+    port2: str = "/dev/ttyACM1"  # port to connect to the bus (arms + 2 wheels)
     disable_torque_on_disconnect: bool = True
 
     # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.
@@ -59,18 +60,20 @@ class XLerobotConfig(RobotConfig):
     # the number of motors in your follower arms.
     max_relative_target: int | None = None
 
-    cameras: dict[str, CameraConfig] = field(default_factory=xlerobot_cameras_config)
+    cameras: dict[str, CameraConfig] = field(default_factory=xlerobot_2wheels_cameras_config)
 
     # Set to `True` for backward compatibility with previous policies/dataset
     use_degrees: bool = False
 
+    # Differential drive parameters
+    wheel_radius: float = 0.05  # Wheel radius in meters
+    wheelbase: float = 0.25     # Distance between left and right wheels in meters
+
     teleop_keys: dict[str, str] = field(
         default_factory=lambda: {
-            # Movement
+            # Movement (differential drive)
             "forward": "i",
             "backward": "k",
-            "left": "j",
-            "right": "l",
             "rotate_left": "u",
             "rotate_right": "o",
             # Speed control
@@ -84,7 +87,7 @@ class XLerobotConfig(RobotConfig):
 
 
 @dataclass
-class XLerobotHostConfig:
+class XLerobot2WheelsHostConfig:
     # Network Configuration
     port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
@@ -98,21 +101,23 @@ class XLerobotHostConfig:
     # If robot jitters decrease the frequency and monitor cpu load with `top` in cmd
     max_loop_freq_hz: int = 30
 
-@RobotConfig.register_subclass("xlerobot_client")
+@RobotConfig.register_subclass("xlerobot_2wheels_client")
 @dataclass
-class XLerobotClientConfig(RobotConfig):
+class XLerobot2WheelsClientConfig(RobotConfig):
     # Network Configuration
     remote_ip: str
     port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
 
+    # Differential drive parameters
+    wheel_radius: float = 0.05  # Wheel radius in meters
+    wheelbase: float = 0.25     # Distance between left and right wheels in meters
+
     teleop_keys: dict[str, str] = field(
         default_factory=lambda: {
-            # Movement
+            # Movement (differential drive)
             "forward": "i",
             "backward": "k",
-            "left": "j",
-            "right": "l",
             "rotate_left": "u",
             "rotate_right": "o",
             # Speed control
@@ -123,7 +128,7 @@ class XLerobotClientConfig(RobotConfig):
         }
     )
 
-    cameras: dict[str, CameraConfig] = field(default_factory=xlerobot_cameras_config)
+    cameras: dict[str, CameraConfig] = field(default_factory=xlerobot_2wheels_cameras_config)
 
     polling_timeout_ms: int = 15
     connect_timeout_s: int = 5

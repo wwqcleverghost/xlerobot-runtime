@@ -869,7 +869,7 @@ def main():
     try:
         # Try to use saved calibration file to avoid recalibrating each time
         # You can modify robot_id here to match your robot configuration
-        robot_config = XLerobotConfig(id="joyandai_xlerobot")  # Can be modified to your robot ID
+        robot_config = XLerobotConfig(id="xlr26009")  # Can be modified to your robot ID
         robot = XLerobot(robot_config)
         
         try:

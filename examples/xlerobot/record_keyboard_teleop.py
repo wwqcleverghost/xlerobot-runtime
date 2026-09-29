@@ -366,7 +366,7 @@ def xlerobot_record_loop(
 
 def main():
     parser = argparse.ArgumentParser(description="Record datasets for xlerobot robot")
-    parser.add_argument("--robot_id", type=str, default="joyandai_xlerobot", help="Robot ID")
+    parser.add_argument("--robot_id", type=str, default="xlr26009", help="Robot ID")
     parser.add_argument("--remote_ip", type=str, default="192.168.200.104", help="Remote robot IP address")
     parser.add_argument("--num_episodes", type=int, default=NUM_EPISODES, help="Number of episodes to record")
     parser.add_argument("--fps", type=int, default=FPS, help="Recording frame rate")

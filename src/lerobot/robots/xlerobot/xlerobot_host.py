@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import base64
 import json
 import logging
@@ -48,8 +49,14 @@ class XLerobotHost:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="XLerobot Host")
+    parser.add_argument(
+        "--robot.id", dest="robot_id", default="xlr26009", help="Robot ID (selects the calibration file)"
+    )
+    args = parser.parse_args()
+
     logging.info("Configuring Xlerobot")
-    robot_config = XLerobotConfig(id="joyandai_xlerobot")
+    robot_config = XLerobotConfig(id=args.robot_id)
     robot = XLerobot(robot_config)
 
     logging.info("Connecting Xlerobot")
