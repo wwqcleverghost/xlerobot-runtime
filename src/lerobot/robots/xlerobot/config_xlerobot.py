@@ -24,14 +24,14 @@ from ..config import RobotConfig
 def xlerobot_cameras_config() -> dict[str, CameraConfig]:
     return {
          "left_wrist": OpenCVCameraConfig(
-             index_or_path="/dev/camera_left", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video2", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),
 
          "right_wrist": OpenCVCameraConfig(
-             index_or_path="/dev/camera_right", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video4", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),  
          "head(RGDB)": OpenCVCameraConfig(
-             index_or_path="/dev/camera_top", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video0", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),                     
         
         # "head": RealSenseCameraConfig(

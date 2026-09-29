@@ -2,11 +2,10 @@
 
 # 本脚本将XLerobot的部分文件拷贝到 lerobot 安装目录下
 
+LEROBOT_DIR="$HOME/lerobot"
+
 # 获取当前脚本所在的目录
 XLE_SOFTWARE_DIR=$(dirname $(readlink -f $0))
-
-# 默认安装到包含本 XLeRobot 目录的 lerobot 仓库，可用 LEROBOT_DIR=... 覆盖
-LEROBOT_DIR="${LEROBOT_DIR:-$(readlink -f $XLE_SOFTWARE_DIR/../..)}"
 
 # 拷贝model
 cp $XLE_SOFTWARE_DIR/src/model/SO101Robot.py $LEROBOT_DIR/src/lerobot/model/
