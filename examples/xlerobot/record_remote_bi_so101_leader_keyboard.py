@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 NUM_EPISODES = 50
 FPS = 30
-EPISODE_TIME_SEC = 300
+EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "My task description"
 MAX_ARM_STEP_PER_FRAME = 3.0  # Normalized joint-position units per control frame.
