@@ -13,6 +13,17 @@ from lerobot.scripts import lerobot_record_eval as evaluation
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_repeated_enter_waits_for_one_explicit_result(self):
+        for answer, expected in (("\x1b[CY", True), ("n", False)):
+            with self.subTest(answer=answer), patch(
+                "builtins.input", side_effect=["", "", "\x1b[D", "maybe", answer]
+            ) as read:
+                self.assertEqual(evaluation.ask_success(), expected)
+            prompts = [call.args[0] for call in read.call_args_list]
+            self.assertEqual(sum("success?" in prompt for prompt in prompts), 1)
+            self.assertEqual(prompts[1:4], ["", "", ""])
+            self.assertEqual(prompts[4], "Please enter y or n: ")
+
     def make_listener(self):
         listeners = []
 

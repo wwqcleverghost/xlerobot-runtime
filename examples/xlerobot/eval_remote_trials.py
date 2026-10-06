@@ -19,7 +19,6 @@ import argparse
 import csv
 import json
 import math
-import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -33,7 +32,7 @@ from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 from lerobot.policies.utils import make_robot_action
 from lerobot.robots.xlerobot.xlerobot_client import XLerobotClient, XLerobotClientConfig
 from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
-from lerobot.utils.control_utils import init_keyboard_listener, predict_action
+from lerobot.utils.control_utils import ask_success, init_keyboard_listener, predict_action
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import get_safe_torch_device
 from record_remote_bi_so101_leader_keyboard import smooth_arm_action  # same filter used when recording
@@ -64,14 +63,6 @@ def move_to(robot, target: dict[str, float], fps: int, speed: float) -> None:
         a = 0.5 - 0.5 * math.cos(math.pi * i / n)
         robot.send_action({**{k: start[k] + a * (target[k] - start[k]) for k in target}, **BASE_STOP})
         time.sleep(1 / fps)
-
-
-def ask_success() -> bool:
-    while True:
-        ans = input("Put the object back, then: success? [y/n] (next episode starts right after): ")
-        ans = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", ans).strip().lower()
-        if ans in ("y", "n"):
-            return ans == "y"
 
 
 def run_episode(robot, policy, preprocessor, postprocessor, features, device, events, args) -> float:
