@@ -20,6 +20,8 @@ Differences from lerobot-record (only when --policy is set and no --teleop):
     instead of the idle reset loop; put the object back, then type y/n (success?) in the terminal.
     The next episode starts right after the answer. <- re-runs the episode (no answer asked).
   - Results are appended to <dataset root>/success.csv and the running success rate is printed.
+  - Arrow keys are ignored while resetting, answering prompts, or encoding videos.
+    --resume=true continues from the saved episode count; num_episodes is the target total.
   - Reset pose = median first-frame observation.state (.pos joints) of --reset_dataset
     (default: the dataset in the policy's train_config.json); base velocities are held at 0.
 
@@ -174,7 +176,6 @@ from lerobot.teleoperators import (  # noqa: F401
 from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop
 from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
 from lerobot.utils.control_utils import (
-    init_keyboard_listener,
     is_headless,
     predict_action,
     sanity_check_dataset_name,
@@ -204,7 +205,7 @@ class DatasetRecordConfig:
     episode_time_s: int | float = 60
     # Number of seconds for resetting the environment after each episode.
     reset_time_s: int | float = 60
-    # Number of episodes to record.
+    # Target total episodes, including episodes already saved when resuming.
     num_episodes: int = 50
     # Encode frames in the dataset into video
     video: bool = True
@@ -371,7 +372,7 @@ def record_loop(
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
 
-        if events["exit_early"]:
+        if events["stop_recording"] or events["exit_early"]:
             events["exit_early"] = False
             break
 
@@ -468,6 +469,64 @@ def record_loop(
 BASE_STOP = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
 
 
+def init_eval_keyboard_listener():
+    """Only accept episode arrow keys while recording; Esc always requests a stop."""
+    events = {
+        "exit_early": False,
+        "rerecord_episode": False,
+        "stop_recording": False,
+        "recording_active": False,
+    }
+    if is_headless():
+        return None, events
+
+    from pynput import keyboard
+
+    def on_press(key):
+        if key == keyboard.Key.esc:
+            events["stop_recording"] = True
+            events["exit_early"] = True
+        elif events["recording_active"]:
+            if key == keyboard.Key.right:
+                events["exit_early"] = True
+            elif key == keyboard.Key.left:
+                events["rerecord_episode"] = True
+                events["exit_early"] = True
+
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+    return listener, events
+
+
+def load_success_history(csv_path: Path, saved_episodes: int) -> list[bool]:
+    """Count only results belonging to episodes that were successfully saved."""
+    if not csv_path.is_file():
+        return []
+    with csv_path.open(newline="") as f:
+        rows = csv.DictReader(f)
+        by_episode = {
+            int(row["episode"]): row["success"] == "1"
+            for row in rows
+            if 0 <= int(row["episode"]) < saved_episodes and row["success"] in ("0", "1")
+        }
+    return [by_episode[index] for index in sorted(by_episode)]
+
+
+def save_evaluation_episode(dataset: LeRobotDataset, success: bool, policy_path: str | Path) -> None:
+    """Write a success label only after the corresponding episode has been saved."""
+    if not dataset.episode_buffer or dataset.episode_buffer["size"] == 0:
+        raise ValueError("Cannot label an evaluation episode without frames")
+    episode_index = dataset.num_episodes
+    dataset.save_episode()
+    csv_path = Path(dataset.root) / "success.csv"
+    new_file = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(["episode", "success", "policy"])
+        writer.writerow([episode_index, int(success), policy_path])
+
+
 def dataset_start_pose(repo_id: str) -> dict[str, float]:
     """Median first-frame observation.state of every episode, .pos joints only."""
     root = HF_LEROBOT_HOME / repo_id
@@ -540,12 +599,13 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 batch_encoding_size=cfg.dataset.video_encoding_batch_size,
             )
 
-            if hasattr(robot, "cameras") and len(getattr(robot, "cameras", None) or robot.config.cameras) > 0:
+            if len(getattr(robot, "cameras", None) or robot.config.cameras) > 0:
                 dataset.start_image_writer(
                     num_processes=cfg.dataset.num_image_writer_processes,
                     num_threads=cfg.dataset.num_image_writer_threads_per_camera * len(getattr(robot, "cameras", None) or robot.config.cameras),
                 )
             sanity_check_dataset_robot_compatibility(dataset, robot, cfg.dataset.fps, dataset_features)
+            dataset.episode_buffer = dataset.create_episode_buffer()
         else:
             # Create empty dataset or load existing saved episodes
             sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
@@ -591,42 +651,63 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         if teleop is not None:
             teleop.connect()
 
-        listener, events = init_keyboard_listener()
+        listener, events = init_eval_keyboard_listener()
+        if listener is None:
+            raise RuntimeError("Evaluation requires a desktop keyboard listener; run from a desktop terminal")
 
         # [eval] Auto arm reset + success prompt when a policy runs without a teleoperator.
         auto_reset = policy is not None and teleop is None
-        results = []
+        results = load_success_history(Path(dataset.root) / "success.csv", dataset.num_episodes)
+        if results:
+            print(f"Saved success rate: {sum(results)}/{len(results)} = {sum(results) / len(results):.0%}")
         if auto_reset:
             reset_repo = cfg.reset_dataset or json.loads(
                 (Path(cfg.policy.pretrained_path) / "train_config.json").read_text()
             )["dataset"]["repo_id"]
             reset_pose = dataset_start_pose(reset_repo)
             reset_arms(robot, reset_pose, cfg.dataset.fps, cfg.reset_speed)
-            input("Place the object, then press Enter to start the first episode: ")
+            input(
+                f"Place the object, then press Enter to start trial {dataset.num_episodes + 1} "
+                f"of {cfg.dataset.num_episodes}: "
+            )
             events["exit_early"] = False
 
         with VideoEncodingManager(dataset):
-            recorded_episodes = 0
+            recorded_episodes = dataset.num_episodes
             while recorded_episodes < cfg.dataset.num_episodes and not events["stop_recording"]:
-                log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
-                record_loop(
-                    robot=robot,
-                    events=events,
-                    fps=cfg.dataset.fps,
-                    teleop_action_processor=teleop_action_processor,
-                    robot_action_processor=robot_action_processor,
-                    robot_observation_processor=robot_observation_processor,
-                    teleop=teleop,
-                    policy=policy,
-                    preprocessor=preprocessor,
-                    postprocessor=postprocessor,
-                    dataset=dataset,
-                    control_time_s=cfg.dataset.episode_time_s,
-                    single_task=cfg.dataset.single_task,
-                    display_data=cfg.display_data,
-                    max_arm_step=cfg.max_arm_step,
-                    allow_base=cfg.allow_base,
-                )
+                log_say(f"Recording trial {dataset.num_episodes + 1} of {cfg.dataset.num_episodes}", cfg.play_sounds)
+                events["exit_early"] = False
+                events["rerecord_episode"] = False
+                events["recording_active"] = True
+                try:
+                    record_loop(
+                        robot=robot,
+                        events=events,
+                        fps=cfg.dataset.fps,
+                        teleop_action_processor=teleop_action_processor,
+                        robot_action_processor=robot_action_processor,
+                        robot_observation_processor=robot_observation_processor,
+                        teleop=teleop,
+                        policy=policy,
+                        preprocessor=preprocessor,
+                        postprocessor=postprocessor,
+                        dataset=dataset,
+                        control_time_s=cfg.dataset.episode_time_s,
+                        single_task=cfg.dataset.single_task,
+                        display_data=cfg.display_data,
+                        max_arm_step=cfg.max_arm_step,
+                        allow_base=cfg.allow_base,
+                    )
+                finally:
+                    events["recording_active"] = False
+
+                if events["stop_recording"]:
+                    break
+                if not dataset.episode_buffer or dataset.episode_buffer["size"] == 0:
+                    logging.warning("No frames recorded; this trial will not be saved or counted")
+                    dataset.episode_buffer = dataset.create_episode_buffer()
+                    input("Place the object, then press Enter to retry this trial: ")
+                    continue
 
                 if auto_reset:
                     # [eval] Replace the idle reset loop: move arms back, ask for success, start next episode.
@@ -643,16 +724,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                         continue
                     success = ask_success()
                     events["exit_early"] = False  # ignore -> presses made while answering
+                    save_evaluation_episode(dataset, success, cfg.policy.pretrained_path)
                     results.append(success)
-                    csv_path = Path(dataset.root) / "success.csv"
-                    new_file = not csv_path.exists()
-                    with csv_path.open("a", newline="") as f:
-                        w = csv.writer(f)
-                        if new_file:
-                            w.writerow(["episode", "success", "policy"])
-                        w.writerow([dataset.num_episodes, int(success), cfg.policy.pretrained_path])
                     print(f"Success rate: {sum(results)}/{len(results)} = {sum(results) / len(results):.0%}")
-                    dataset.save_episode()
                     recorded_episodes += 1
                     continue
 
