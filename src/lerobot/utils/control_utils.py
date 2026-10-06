@@ -18,6 +18,7 @@
 
 
 import logging
+import re
 import traceback
 from contextlib import nullcontext
 from copy import copy
@@ -34,6 +35,18 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.utils import prepare_observation_for_inference
 from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 from lerobot.robots import Robot
+
+
+def ask_success() -> bool:
+    """Ask for one trial result; blank Enter presses keep waiting without repeating the prompt."""
+    prompt = "Put the object back, then: success? [y/n] (next episode starts right after): "
+    while True:
+        ans = input(prompt)
+        # Arrow keys in a focused terminal can leave escape sequences in stdin.
+        ans = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", ans).strip().lower()
+        if ans in ("y", "n"):
+            return ans == "y"
+        prompt = "Please enter y or n: " if ans else ""
 
 
 @cache

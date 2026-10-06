@@ -109,7 +109,6 @@ import csv
 import json
 import logging
 import math
-import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -176,6 +175,7 @@ from lerobot.teleoperators import (  # noqa: F401
 from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop
 from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
 from lerobot.utils.control_utils import (
+    ask_success,
     is_headless,
     predict_action,
     sanity_check_dataset_name,
@@ -550,15 +550,6 @@ def reset_arms(robot, target: dict[str, float], fps: int, speed: float) -> None:
         a = 0.5 - 0.5 * math.cos(math.pi * i / n)
         robot.send_action({**{k: start[k] + a * (target[k] - start[k]) for k in target}, **base})
         time.sleep(1 / fps)
-
-
-def ask_success() -> bool:
-    while True:
-        ans = input("Put the object back, then: success? [y/n] (next episode starts right after): ")
-        # Arrow keys pressed while this terminal has focus leave escape sequences (e.g. "\x1b[C") in stdin.
-        ans = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", ans).strip().lower()
-        if ans in ("y", "n"):
-            return ans == "y"
 
 
 @parser.wrap()
