@@ -64,8 +64,10 @@ class DiffusionConfig(PreTrainedConfig):
         output_normalization_modes: Similar dictionary as `normalize_input_modes`, but to unnormalize to the
             original scale. Note that this is also used for normalizing the training targets.
         vision_backbone: Name of the torchvision resnet backbone to use for encoding images.
+        resize_shape: (H, W) shape to resize images to (bilinear, antialiased) before cropping, inside the
+            vision encoder, so training and inference match. If None, no resizing is done.
         crop_shape: (H, W) shape to crop images to as a preprocessing step for the vision backbone. Must fit
-            within the image size. If None, no cropping is done.
+            within the image size (or `resize_shape` if set). If None, no cropping is done.
         crop_is_random: Whether the crop should be random at training time (it's always a center crop in eval
             mode).
         pretrained_backbone_weights: Pretrained weights from torchvision to initialize the backbone.
@@ -123,6 +125,7 @@ class DiffusionConfig(PreTrainedConfig):
     # Architecture / modeling.
     # Vision backbone.
     vision_backbone: str = "resnet18"
+    resize_shape: tuple[int, int] | None = None
     crop_shape: tuple[int, int] | None = (84, 84)
     crop_is_random: bool = True
     pretrained_backbone_weights: str | None = None
@@ -209,11 +212,12 @@ class DiffusionConfig(PreTrainedConfig):
 
         if self.crop_shape is not None:
             for key, image_ft in self.image_features.items():
-                if self.crop_shape[0] > image_ft.shape[1] or self.crop_shape[1] > image_ft.shape[2]:
+                h, w = self.resize_shape if self.resize_shape is not None else image_ft.shape[1:]
+                if self.crop_shape[0] > h or self.crop_shape[1] > w:
                     raise ValueError(
                         f"`crop_shape` should fit within the images shapes. Got {self.crop_shape} "
-                        f"for `crop_shape` and {image_ft.shape} for "
-                        f"`{key}`."
+                        f"for `crop_shape` and {(h, w)} for `{key}`"
+                        + (" after `resize_shape`." if self.resize_shape is not None else ".")
                     )
 
         # Check that all input images have the same shape.

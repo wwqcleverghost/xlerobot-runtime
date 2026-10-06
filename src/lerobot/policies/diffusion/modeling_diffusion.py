@@ -446,6 +446,7 @@ class DiffusionRgbEncoder(nn.Module):
     def __init__(self, config: DiffusionConfig):
         super().__init__()
         # Set up optional preprocessing.
+        self.resize_shape = config.resize_shape
         if config.crop_shape is not None:
             self.do_crop = True
             # Always use center crop for eval
@@ -483,7 +484,7 @@ class DiffusionRgbEncoder(nn.Module):
 
         # Note: we have a check in the config class to make sure all images have the same shape.
         images_shape = next(iter(config.image_features.values())).shape
-        dummy_shape_h_w = config.crop_shape if config.crop_shape is not None else images_shape[1:]
+        dummy_shape_h_w = config.crop_shape or config.resize_shape or images_shape[1:]
         dummy_shape = (1, images_shape[0], *dummy_shape_h_w)
         feature_map_shape = get_output_shape(self.backbone, dummy_shape)[1:]
 
@@ -499,7 +500,9 @@ class DiffusionRgbEncoder(nn.Module):
         Returns:
             (B, D) image feature.
         """
-        # Preprocess: maybe crop (if it was set up in the __init__).
+        # Preprocess: maybe resize, then maybe crop (if they were set up in the __init__).
+        if self.resize_shape is not None:
+            x = F.interpolate(x, size=tuple(self.resize_shape), mode="bilinear", align_corners=False, antialias=True)
         if self.do_crop:
             if self.training:  # noqa: SIM108
                 x = self.maybe_random_crop(x)
