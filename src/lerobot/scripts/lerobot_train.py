@@ -21,6 +21,8 @@ from typing import Any
 
 import torch
 from accelerate import Accelerator
+from diffusers.training_utils import EMAModel
+from safetensors.torch import load_model, save_model
 from termcolor import colored
 from torch.optim import Optimizer
 
@@ -28,6 +30,7 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.transforms import ImageTransforms
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.envs.utils import close_envs
@@ -36,6 +39,7 @@ from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.scripts.lerobot_eval import eval_policy_all
+from lerobot.utils.constants import TRAINING_STATE_DIR
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
@@ -51,6 +55,8 @@ from lerobot.utils.utils import (
     has_method,
     init_logging,
 )
+
+RAW_MODEL_FILE = "raw_model.safetensors"
 
 
 def update_policy(
@@ -355,6 +361,22 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     )
     dl_iter = cycle(dataloader)
 
+    ema = None
+    if cfg.ema_decay is not None:
+        # Warmup schedule from the Diffusion Policy paper: decay = 1 - (1 + step) ** -0.75, capped at ema_decay.
+        ema_params = list(accelerator.unwrap_model(policy).parameters())
+        # On resume the policy was loaded from pretrained_model, i.e. the EMA weights.
+        ema = EMAModel(ema_params, decay=cfg.ema_decay, use_ema_warmup=True, power=0.75, foreach=True)
+        ema.optimization_step = step
+        raw_model_path = cfg.checkpoint_path / TRAINING_STATE_DIR / RAW_MODEL_FILE if cfg.resume else None
+        if raw_model_path is not None and raw_model_path.exists():
+            load_model(accelerator.unwrap_model(policy), raw_model_path)
+
+    # One call per sample and camera, as LeRobotDataset does: each draws its own random params, shared by
+    # the sample's n_obs_steps frames. A single call on the whole batch would share one draw.
+    tf_cfg = cfg.dataset.image_transforms
+    gpu_image_transforms = ImageTransforms(tf_cfg) if tf_cfg.enable and tf_cfg.on_gpu else None
+
     policy.train()
 
     train_metrics = {
@@ -384,6 +406,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
+        if gpu_image_transforms is not None:
+            for key in dataset.meta.camera_keys:
+                frames = batch[key].to(device, non_blocking=True)
+                batch[key] = torch.stack([gpu_image_transforms(f) for f in frames])
         batch = preprocessor(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
@@ -397,6 +423,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             lr_scheduler=lr_scheduler,
             rabc_weights_provider=rabc_weights,
         )
+        if ema is not None:
+            ema.step(ema_params)
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -429,6 +457,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             if is_main_process:
                 logging.info(f"Checkpoint policy after step {step}")
                 checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
+                if ema is not None:
+                    ema.store(ema_params)
+                    ema.copy_to(ema_params)
                 save_checkpoint(
                     checkpoint_dir=checkpoint_dir,
                     step=step,
@@ -439,6 +470,12 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     preprocessor=preprocessor,
                     postprocessor=postprocessor,
                 )
+                if ema is not None:
+                    ema.restore(ema_params)
+                    save_model(
+                        accelerator.unwrap_model(policy),
+                        str(checkpoint_dir / TRAINING_STATE_DIR / RAW_MODEL_FILE),
+                    )
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)
@@ -496,6 +533,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     if eval_env:
         close_envs(eval_env)
+
+    if ema is not None:
+        ema.copy_to(ema_params)  # push_to_hub below uploads the EMA weights
 
     if is_main_process:
         logging.info("End of training")
