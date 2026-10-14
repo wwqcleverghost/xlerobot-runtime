@@ -80,9 +80,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
     Returns:
         LeRobotDataset | MultiLeRobotDataset
     """
-    image_transforms = (
-        ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
-    )
+    tf_cfg = cfg.dataset.image_transforms
+    # With on_gpu the training loop applies them instead.
+    image_transforms = ImageTransforms(tf_cfg) if tf_cfg.enable and not tf_cfg.on_gpu else None
 
     if isinstance(cfg.dataset.repo_id, str):
         ds_meta = LeRobotDatasetMetadata(

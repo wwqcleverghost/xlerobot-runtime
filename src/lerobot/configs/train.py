@@ -60,6 +60,9 @@ class TrainPipelineConfig(HubMixin):
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
+    # EMA of the policy weights (as in the Diffusion Policy paper), None disables it. When enabled, the
+    # checkpoint's pretrained_model holds the EMA weights and training_state holds the raw ones for resuming.
+    ema_decay: float | None = None
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
