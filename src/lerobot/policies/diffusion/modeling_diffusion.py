@@ -89,12 +89,16 @@ class DiffusionPolicy(PreTrainedPolicy):
             self._queues[OBS_IMAGES] = deque(maxlen=self.config.n_obs_steps)
         if self.config.env_state_feature:
             self._queues[OBS_ENV_STATE] = deque(maxlen=self.config.n_obs_steps)
+        self._react_buffer = None  # rolling-denoising action buffer, when config.react_blocks is set
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
         """Predict a chunk of actions given environment observations."""
         # stack n latest observations from the queue
         batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
+        if self.config.react_blocks is not None:
+            actions, self._react_buffer = self.diffusion.react_step(batch, self._react_buffer)
+            return actions
         actions = self.diffusion.generate_actions(batch, noise=noise)
 
         return actions
@@ -182,6 +186,11 @@ class DiffusionModel(nn.Module):
 
         self.unet = DiffusionConditionalUnet1d(config, global_cond_dim=global_cond_dim * config.n_obs_steps)
 
+        if config.noise_scheduler_type == "FLOW":
+            self.noise_scheduler = None  # flow matching needs no diffusers scheduler
+            self.num_inference_steps = config.num_inference_steps or 10
+            return
+
         self.noise_scheduler = _make_noise_scheduler(
             config.noise_scheduler_type,
             num_train_timesteps=config.num_train_timesteps,
@@ -220,6 +229,16 @@ class DiffusionModel(nn.Module):
                 generator=generator,
             )
         )
+
+        if self.config.noise_scheduler_type == "FLOW":
+            # Euler-integrate the velocity from pure noise (tau = 1) to actions (tau = 0).
+            n = self.num_inference_steps
+            for k in range(n):
+                tau = torch.full(sample.shape[:1], 1 - k / n, dtype=sample.dtype, device=sample.device)
+                sample = sample - self._flow_velocity(sample, tau, global_cond) / n
+            if self.config.clip_sample:
+                sample = sample.clamp(-self.config.clip_sample_range, self.config.clip_sample_range)
+            return sample
 
         self.noise_scheduler.set_timesteps(self.num_inference_steps)
 
@@ -300,6 +319,48 @@ class DiffusionModel(nn.Module):
 
         return actions
 
+    def _flow_velocity(self, x: Tensor, tau: Tensor, global_cond: Tensor) -> Tensor:
+        # tau in [0, 1] per sample, scaled to the DDPM timestep range the U-Net's sinusoidal embedding expects.
+        return self.unet(x, tau * self.config.num_train_timesteps, global_cond=global_cond)
+
+    # ========= rolling denoising (config.react_blocks) ============
+    def _react_tau(self, x: Tensor) -> Tensor:
+        """(1, horizon, 1) noise level of each buffer position before an update: block k is at (k + 1) / K."""
+        block = torch.arange(self.config.horizon, device=x.device) // self.config.n_action_steps
+        return ((block + 1) / self.config.react_blocks).to(x.dtype)[None, :, None]
+
+    def _react_velocity(self, x: Tensor, global_cond: Tensor) -> Tensor:
+        # The noise level varies along the buffer, so it goes in per position as an extra input channel; the
+        # U-Net's global timestep embedding gets a constant.
+        tau = self._react_tau(x).expand(x.shape[0], -1, -1)
+        timestep = torch.zeros(x.shape[0], device=x.device)
+        return self.unet(torch.cat([x, tau], dim=-1), timestep, global_cond=global_cond)
+
+    def _react_roll(self, buffer: Tensor, global_cond: Tensor) -> tuple[Tensor, Tensor]:
+        """One Euler step moves every block down one noise level (the front one to clean); returns the front
+        block and the buffer shifted by one block with pure noise appended at the tail."""
+        x = buffer - self._react_velocity(buffer, global_cond) / self.config.react_blocks
+        s = self.config.n_action_steps
+        return x[:, :s], torch.cat([x[:, s:], torch.randn_like(x[:, :s])], dim=1)
+
+    def react_step(self, batch: dict[str, Tensor], buffer: Tensor | None) -> tuple[Tensor, Tensor]:
+        """Returns the next `n_action_steps` actions and the rolling buffer to pass to the next call."""
+        global_cond = self._prepare_global_conditioning(batch)
+        if buffer is None:
+            # Pure noise is right only for the tail block. After K - 1 discarded updates every block has
+            # entered at the tail, so the buffer holds the noise staircase that training assumes.
+            buffer = torch.randn(
+                (global_cond.shape[0], self.config.horizon, self.config.action_feature.shape[0]),
+                dtype=get_dtype_from_parameters(self),
+                device=get_device_from_parameters(self),
+            )
+            for _ in range(self.config.react_blocks - 1):
+                buffer = self._react_roll(buffer, global_cond)[1]
+        actions, buffer = self._react_roll(buffer, global_cond)
+        if self.config.clip_sample:
+            actions = actions.clamp(-self.config.clip_sample_range, self.config.clip_sample_range)
+        return actions, buffer
+
     def compute_loss(self, batch: dict[str, Tensor]) -> Tensor:
         """
         This function expects `batch` to have (at least):
@@ -329,27 +390,40 @@ class DiffusionModel(nn.Module):
         trajectory = batch[ACTION]
         # Sample noise to add to the trajectory.
         eps = torch.randn(trajectory.shape, device=trajectory.device)
-        # Sample a random noising timestep for each item in the batch.
-        timesteps = torch.randint(
-            low=0,
-            high=self.noise_scheduler.config.num_train_timesteps,
-            size=(trajectory.shape[0],),
-            device=trajectory.device,
-        ).long()
-        # Add noise to the clean trajectories according to the noise magnitude at each timestep.
-        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
-
-        # Run the denoising network (that might denoise the trajectory, or attempt to predict the noise).
-        pred = self.unet(noisy_trajectory, timesteps, global_cond=global_cond)
-
-        # Compute the loss.
-        # The target is either the original trajectory, or the noise.
-        if self.config.prediction_type == "epsilon":
-            target = eps
-        elif self.config.prediction_type == "sample":
-            target = batch[ACTION]
+        if self.config.react_blocks is not None:
+            # Flow matching (x_tau = tau * eps + (1 - tau) * action, velocity eps - action) on the fixed noise
+            # staircase the rolling buffer holds at inference: one sample trains all K blocks at once.
+            tau = self._react_tau(trajectory)
+            pred = self._react_velocity(tau * eps + (1 - tau) * trajectory, global_cond)
+            target = eps - trajectory
+        elif self.config.noise_scheduler_type == "FLOW":
+            # Flow matching: one uniformly sampled noise level per sample for the whole chunk.
+            tau = torch.rand(trajectory.shape[0], device=trajectory.device)
+            noisy_trajectory = tau[:, None, None] * eps + (1 - tau[:, None, None]) * trajectory
+            pred = self._flow_velocity(noisy_trajectory, tau, global_cond)
+            target = eps - trajectory
         else:
-            raise ValueError(f"Unsupported prediction type {self.config.prediction_type}")
+            # Sample a random noising timestep for each item in the batch.
+            timesteps = torch.randint(
+                low=0,
+                high=self.noise_scheduler.config.num_train_timesteps,
+                size=(trajectory.shape[0],),
+                device=trajectory.device,
+            ).long()
+            # Add noise to the clean trajectories according to the noise magnitude at each timestep.
+            noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
+
+            # Run the denoising network (that might denoise the trajectory, or attempt to predict the noise).
+            pred = self.unet(noisy_trajectory, timesteps, global_cond=global_cond)
+
+            # Compute the loss.
+            # The target is either the original trajectory, or the noise.
+            if self.config.prediction_type == "epsilon":
+                target = eps
+            elif self.config.prediction_type == "sample":
+                target = batch[ACTION]
+            else:
+                raise ValueError(f"Unsupported prediction type {self.config.prediction_type}")
 
         loss = F.mse_loss(pred, target, reduction="none")
 
@@ -606,7 +680,9 @@ class DiffusionConditionalUnet1d(nn.Module):
 
         # In channels / out channels for each downsampling block in the Unet's encoder. For the decoder, we
         # just reverse these.
-        in_out = [(config.action_feature.shape[0], config.down_dims[0])] + list(
+        # Rolling denoising feeds each position's noise level as one extra input channel.
+        in_dim = config.action_feature.shape[0] + (config.react_blocks is not None)
+        in_out = [(in_dim, config.down_dims[0])] + list(
             zip(config.down_dims[:-1], config.down_dims[1:], strict=True)
         )
 

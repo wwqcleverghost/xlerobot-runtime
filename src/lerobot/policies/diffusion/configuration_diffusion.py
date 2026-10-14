@@ -86,7 +86,10 @@ class DiffusionConfig(PreTrainedConfig):
         use_film_scale_modulation: FiLM (https://huggingface.co/papers/1709.07871) is used for the Unet conditioning.
             Bias modulation is used be default, while this parameter indicates whether to also use scale
             modulation.
-        noise_scheduler_type: Name of the noise scheduler to use. Supported options: ["DDPM", "DDIM"].
+        noise_scheduler_type: Name of the noise scheduler to use. Supported options: ["DDPM", "DDIM", "FLOW"].
+            "FLOW" is flow matching instead of diffusion: training noises the whole chunk at one uniformly
+            sampled level tau and regresses the velocity (noise - action); inference integrates it with
+            `num_inference_steps` Euler steps (default 10). `prediction_type` and the beta settings are unused.
         num_train_timesteps: Number of diffusion steps for the forward diffusion schedule.
         beta_schedule: Name of the diffusion beta schedule as per DDPMScheduler from Hugging Face diffusers.
         beta_start: Beta value for the first forward-diffusion step.
@@ -151,6 +154,14 @@ class DiffusionConfig(PreTrainedConfig):
     # Inference
     num_inference_steps: int | None = None
 
+    # Rolling denoising (REACT, arXiv 2610.12007) instead of DDPM/DDIM when set. The policy keeps a buffer of
+    # `horizon` future actions, starting at the current step, split into `react_blocks` blocks of
+    # `n_action_steps` actions at staggered flow-matching noise levels: block k is at tau = (k + 1) / K.
+    # Each update denoises the whole buffer once (one Euler step) with the latest observations, executes the
+    # now clean front block, shifts the buffer by one block and appends pure noise. Training noises the
+    # actions with that same fixed staircase. Requires horizon == react_blocks * n_action_steps.
+    react_blocks: int | None = None
+
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
@@ -176,7 +187,7 @@ class DiffusionConfig(PreTrainedConfig):
             raise ValueError(
                 f"`prediction_type` must be one of {supported_prediction_types}. Got {self.prediction_type}."
             )
-        supported_noise_schedulers = ["DDPM", "DDIM"]
+        supported_noise_schedulers = ["DDPM", "DDIM", "FLOW"]
         if self.noise_scheduler_type not in supported_noise_schedulers:
             raise ValueError(
                 f"`noise_scheduler_type` must be one of {supported_noise_schedulers}. "
@@ -190,6 +201,13 @@ class DiffusionConfig(PreTrainedConfig):
             raise ValueError(
                 "The horizon should be an integer multiple of the downsampling factor (which is determined "
                 f"by `len(down_dims)`). Got {self.horizon=} and {self.down_dims=}"
+            )
+        if self.react_blocks is not None and (
+            self.react_blocks < 2 or self.horizon != self.react_blocks * self.n_action_steps
+        ):
+            raise ValueError(
+                "Rolling denoising needs react_blocks >= 2 and horizon == react_blocks * n_action_steps. "
+                f"Got {self.react_blocks=}, {self.horizon=}, {self.n_action_steps=}"
             )
 
     def get_optimizer_preset(self) -> AdamConfig:
@@ -235,6 +253,8 @@ class DiffusionConfig(PreTrainedConfig):
 
     @property
     def action_delta_indices(self) -> list:
+        if self.react_blocks is not None:
+            return list(range(self.horizon))  # the rolling buffer starts at the current step
         return list(range(1 - self.n_obs_steps, 1 - self.n_obs_steps + self.horizon))
 
     @property
