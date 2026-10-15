@@ -28,8 +28,10 @@ def keep_range(actions: np.ndarray, states: np.ndarray, pos: list[int], max_delt
     """actions, states: (T, D) for one episode. Returns (first, end): keep frames [first, end)."""
     a, p = actions[:, pos], np.c_[actions[:, pos], states[:, pos]]
     still = np.r_[0.0, np.abs(np.diff(p, axis=0)).max(1)] <= max_delta
-    ref = a[min(2, len(a) - 1)]  # frames 0-1 often hold a recording-start jitter
+    j = min(2, len(a) - 1)
+    ref = a[j]  # frames 0-1 often hold a recording-start jitter
     left = np.abs(a - ref).max(1) > start_tol
+    left[:j] = False  # the jitter itself is not the task leaving the start pose
     task = int(np.argmax(left)) if left.any() else len(a)
     first = int(np.flatnonzero(still[:task])[-1]) if still[:task].any() else 0
     away = np.abs(p - p[-1]).max(1) >= reset_tol
@@ -47,6 +49,10 @@ def check_keep_range():
     assert keep_range(a, s, [0], 0.2, 2, 1) == (5, 12)
     # Recording stopped mid-reset: nothing to cut at the tail.
     assert keep_range(a[:10], a[:10], [0], 0.2, 2, 1) == (5, 10)
+    # A start jitter that leaves the command more than start_tol away (episodes 0, 7, 26 of handover4)
+    # does not start the task either.
+    b = np.array([3, 1.5, 0, 0, 0, 0, 0, 4, 8, 8, 0, 0], float)[:, None]
+    assert keep_range(b, b, [0], 0.2, 2, 1) == (6, 11)
 
 
 def main():
