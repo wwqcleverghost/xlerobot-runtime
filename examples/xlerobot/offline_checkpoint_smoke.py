@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.datasets.factory import DropNamesDataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 from lerobot.utils.control_utils import predict_action
@@ -36,7 +37,7 @@ def main():
     dataset_root = Path.home() / ".cache/huggingface/lerobot" / repo_id
     assert dataset_root.is_dir(), dataset_root
 
-    ds = LeRobotDataset(repo_id, root=dataset_root)
+    ds = DropNamesDataset(LeRobotDataset(repo_id, root=dataset_root), train["dataset"].get("drop_names", []))
     sample = ds[0]
     observation = {}
     for key, value in sample.items():
