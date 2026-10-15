@@ -36,9 +36,9 @@ def test_rolling_denoising_recovers_trajectory_with_exact_velocity():
     model._react_velocity = exact_velocity
     model._prepare_global_conditioning = lambda batch: torch.zeros(1, 1)
     buffer = None
-    for step in range(rolls - K + 1):
-        actions, buffer = model.react_step({}, buffer)
-        r = step + K - 1  # the first call also runs the K - 1 warm-up rolls
+    for r in range(rolls):
+        # The first call must already act for the current step: no warm-up rolls that run ahead in time.
+        actions, buffer = model.react_step({OBS_STATE: torch.zeros(1, 2, A)}, buffer)
         torch.testing.assert_close(actions, truth[:, r * S : (r + 1) * S])
     assert len(calls) == rolls
 
