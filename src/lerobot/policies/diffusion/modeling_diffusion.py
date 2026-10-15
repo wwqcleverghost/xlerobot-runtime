@@ -347,15 +347,21 @@ class DiffusionModel(nn.Module):
         """Returns the next `n_action_steps` actions and the rolling buffer to pass to the next call."""
         global_cond = self._prepare_global_conditioning(batch)
         if buffer is None:
-            # Pure noise is right only for the tail block. After K - 1 discarded updates every block has
-            # entered at the tail, so the buffer holds the noise staircase that training assumes.
-            buffer = torch.randn(
+            # Start on the noise staircase training assumes (block k: tau_k * noise + (1 - tau_k) * actions),
+            # with "hold the current state" standing in for the unknown actions. Warm-up rolls from pure noise
+            # also reach the staircase, but each one moves the buffer a block ahead in time while the robot
+            # stands still, so the first executed block was planned K - 1 blocks in the future.
+            noise = torch.randn(
                 (global_cond.shape[0], self.config.horizon, self.config.action_feature.shape[0]),
                 dtype=get_dtype_from_parameters(self),
                 device=get_device_from_parameters(self),
             )
-            for _ in range(self.config.react_blocks - 1):
-                buffer = self._react_roll(buffer, global_cond)[1]
+            # ponytail: the normalized state is used as a normalized action, assuming state and action are the
+            # same joints with near-identical min/max stats (XLeRobot: within 3 deg); otherwise prior 0.
+            state = batch.get(OBS_STATE)
+            hold = state[:, -1:].to(noise.dtype) if state is not None and state.shape[-1] == noise.shape[-1] else 0
+            tau = self._react_tau(noise)
+            buffer = tau * noise + (1 - tau) * hold
         actions, buffer = self._react_roll(buffer, global_cond)
         if self.config.clip_sample:
             actions = actions.clamp(-self.config.clip_sample_range, self.config.clip_sample_range)
