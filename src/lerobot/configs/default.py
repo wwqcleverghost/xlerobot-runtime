@@ -37,8 +37,11 @@ class DatasetConfig:
     streaming: bool = False
     # Entries of named vector features (observation.state, action) that training never sees; names a dataset
     # lacks are ignored. XLeRobot's head servos are not part of the task, and their tiny recorded range turns a
-    # sub-degree reading drift into far out-of-range normalized inputs. Pass '[]' to keep everything.
-    drop_names: list[str] = field(default_factory=lambda: ["head_motor_1.pos", "head_motor_2.pos"])
+    # sub-degree reading drift into far out-of-range normalized inputs; the base velocities are always 0 in the
+    # arm-only tasks (the eval script sends 0 for them). Pass '[]' to keep everything.
+    drop_names: list[str] = field(
+        default_factory=lambda: ["head_motor_1.pos", "head_motor_2.pos", "x.vel", "y.vel", "theta.vel"]
+    )
 
 
 @dataclass
