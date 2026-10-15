@@ -125,6 +125,7 @@ from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # no
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.configs import parser
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.datasets.factory import drop_feature_names
 from lerobot.datasets.image_writer import safe_stop_image_writer
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.pipeline_features import aggregate_pipeline_dataset_features, create_initial_features
@@ -173,7 +174,7 @@ from lerobot.teleoperators import (  # noqa: F401
     xlebi_so101_leader,
 )
 from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop
-from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
+from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STATE, OBS_STR
 from lerobot.utils.control_utils import (
     ask_success,
     is_headless,
@@ -366,6 +367,8 @@ def record_loop(
         postprocessor.reset()
 
     prev_sent = None  # [eval] last command sent, for max_arm_step smoothing
+    raw_hist = []  # [eval] previous two policy outputs, for smooth_arm_action
+    state_range = train_state_range(preprocessor)
 
     timestamp = 0
     start_episode_t = time.perf_counter()
@@ -388,7 +391,7 @@ def record_loop(
         # Get action from either policy or teleop
         if policy is not None and preprocessor is not None and postprocessor is not None:
             action_values = predict_action(
-                observation=observation_frame,
+                observation=clip_state(observation_frame, state_range),
                 policy=policy,
                 device=get_safe_torch_device(policy.config.device),
                 preprocessor=preprocessor,
@@ -436,12 +439,8 @@ def record_loop(
         # so action actually sent is saved in the dataset. action = postprocessor.process(action)
         # TODO(steven, pepijn, adil): we should use a pipeline step to clip the action, so the sent action is the action that we input to the robot.
         if policy is not None and max_arm_step > 0:
-            # [eval] Low-pass + rate-limit joint positions relative to the last command (first: measured pose).
             prev = prev_sent if prev_sent is not None else obs
-            for k, v in robot_action_to_send.items():
-                if k.endswith(".pos") and k in prev:
-                    p = float(prev[k])
-                    robot_action_to_send[k] = p + max(-max_arm_step, min(max_arm_step, 0.8 * (float(v) - p)))
+            robot_action_to_send, raw_hist = smooth_arm_action(robot_action_to_send, raw_hist, prev, max_arm_step)
             prev_sent = dict(robot_action_to_send)
 
         if policy is not None and not allow_base:
@@ -467,6 +466,39 @@ def record_loop(
 
 
 BASE_STOP = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
+
+
+def train_state_range(preprocessor) -> tuple[np.ndarray, np.ndarray] | None:
+    """[eval] Training min/max of observation.state, from the policy's normalizer step."""
+    for step in getattr(preprocessor, "steps", []):
+        stats = (getattr(step, "stats", None) or {}).get(OBS_STATE, {})
+        if "min" in stats and "max" in stats:
+            return np.asarray(stats["min"], dtype=np.float32), np.asarray(stats["max"], dtype=np.float32)
+    return None
+
+
+def clip_state(observation_frame: dict, state_range) -> dict:
+    """[eval] The policy sees the state clipped into its training range; the dataset keeps the measured one.
+    The head servos barely moved while recording (0.1-0.4 deg range), so being 1 deg off normalizes to 3-5
+    instead of [-1, 1] and the policy drives both arms to the same pose whatever the camera shows."""
+    if state_range is None or OBS_STATE not in observation_frame:
+        return observation_frame
+    return {**observation_frame, OBS_STATE: np.clip(observation_frame[OBS_STATE], *state_range).astype(np.float32)}
+
+
+def smooth_arm_action(action: dict, raw_hist: list, prev: dict, max_arm_step: float) -> tuple[dict, list]:
+    """[eval] A [1, 2, 1] / 4 filter over the last three policy outputs cancels the frame-to-frame zig-zag of
+    Diffusion/flow samples (1 frame lag); then each joint position moves 0.8 of the way from the previous
+    command `prev` (first frame: measured pose), at most `max_arm_step` per frame. Returns (action, raw_hist)."""
+    raw = dict(action)
+    a2, a1 = (raw_hist or [raw, raw])[-2:]
+    out = dict(action)
+    for k, v in raw.items():
+        if k.endswith(".pos") and k in prev:
+            v = (float(v) + 2 * float(a1[k]) + float(a2[k])) / 4
+            p = float(prev[k])
+            out[k] = p + max(-max_arm_step, min(max_arm_step, 0.8 * (v - p)))
+    return out, [a1, raw]
 
 
 def init_eval_keyboard_listener():
@@ -578,6 +610,11 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             use_videos=cfg.dataset.video,
         ),
     )
+    # [eval] Leave out the state/action entries the policy was trained without (e.g. the head servos): the
+    # recorded dataset matches the policy, and the robot gets no command for them.
+    train_cfg_path = None if cfg.policy is None else Path(cfg.policy.pretrained_path) / "train_config.json"
+    if train_cfg_path is not None and train_cfg_path.is_file():
+        drop_feature_names(dataset_features, json.loads(train_cfg_path.read_text())["dataset"].get("drop_names", []))
 
     dataset = None
     listener = None

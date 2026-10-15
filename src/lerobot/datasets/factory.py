@@ -16,6 +16,7 @@
 import logging
 from pprint import pformat
 
+import numpy as np
 import torch
 
 from lerobot.configs.policies import PreTrainedConfig
@@ -66,6 +67,48 @@ def resolve_delta_timestamps(
         delta_timestamps = None
 
     return delta_timestamps
+
+
+def drop_feature_names(features: dict, names: list[str]) -> dict[str, list[int]]:
+    """Removes `names` (e.g. "head_motor_1.pos") from every named vector feature such as observation.state and
+    action, updating its names and shape in place. Returns the kept indices of each feature that changed."""
+    keep = {}
+    for key, ft in features.items():
+        ft_names = ft.get("names")
+        if isinstance(ft_names, list) and set(ft_names) & set(names):
+            keep[key] = [i for i, n in enumerate(ft_names) if n not in names]
+            ft["names"] = [ft_names[i] for i in keep[key]]
+            ft["shape"] = (len(keep[key]),)
+    return keep
+
+
+class DropNamesDataset(torch.utils.data.Dataset):
+    """A LeRobotDataset without some named state/action entries (see drop_feature_names): items, meta.features
+    and the per-dimension meta.stats are all sliced, so the policy and its saved normalizer never see them."""
+
+    def __init__(self, dataset: LeRobotDataset, names: list[str]):
+        self.dataset = dataset
+        sizes = {k: len(ft["names"]) for k, ft in dataset.meta.features.items() if isinstance(ft.get("names"), list)}
+        self.keep = drop_feature_names(dataset.meta.features, names)
+        for key, idx in self.keep.items():
+            stats = dataset.meta.stats.get(key, {})
+            for stat, value in stats.items():
+                if np.shape(value)[-1:] == (sizes[key],):  # per-dimension stats ("count" is a single number)
+                    stats[stat] = value[idx]
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx) -> dict:
+        item = self.dataset[idx]
+        for key, keep in self.keep.items():
+            item[key] = item[key][..., keep]
+        return item
+
+    def __getattr__(self, name):  # meta, num_frames, episodes, ... come from the wrapped dataset
+        if name == "dataset":  # not set yet while a DataLoader worker unpickles this object
+            raise AttributeError(name)
+        return getattr(self.dataset, name)
 
 
 def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
@@ -124,6 +167,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             "Multiple datasets were provided. Applied the following index mapping to the provided datasets: "
             f"{pformat(dataset.repo_id_to_index, indent=2)}"
         )
+
+    if cfg.dataset.drop_names:
+        if cfg.dataset.streaming:
+            raise ValueError("--dataset.drop_names needs a non-streaming dataset; pass --dataset.drop_names='[]'")
+        dataset = DropNamesDataset(dataset, cfg.dataset.drop_names)
 
     if cfg.dataset.use_imagenet_stats:
         for key in dataset.meta.camera_keys:

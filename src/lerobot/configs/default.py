@@ -35,6 +35,10 @@ class DatasetConfig:
     use_imagenet_stats: bool = True
     video_backend: str = field(default_factory=get_safe_default_codec)
     streaming: bool = False
+    # Entries of named vector features (observation.state, action) that training never sees; names a dataset
+    # lacks are ignored. XLeRobot's head servos are not part of the task, and their tiny recorded range turns a
+    # sub-degree reading drift into far out-of-range normalized inputs. Pass '[]' to keep everything.
+    drop_names: list[str] = field(default_factory=lambda: ["head_motor_1.pos", "head_motor_2.pos"])
 
 
 @dataclass

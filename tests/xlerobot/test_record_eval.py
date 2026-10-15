@@ -163,6 +163,18 @@ class EvaluationTests(unittest.TestCase):
                     rows = list(csv.DictReader(f))
                 self.assertEqual([int(row["episode"]) for row in rows], [0, 1, 2, 3])
 
+    def test_smoothing_cancels_zigzag_and_limits_steps(self):
+        k = "left_arm_elbow_flex.pos"
+        prev, hist, sent = {k: 10.0}, [], []
+        for t in range(40):  # policy output zig-zags 10 +- 1 every frame
+            action, hist = evaluation.smooth_arm_action({k: 10.0 + (-1) ** t, "x.vel": 0.3}, hist, prev, 3.0)
+            prev = action
+            sent.append(action[k])
+        self.assertLess(max(sent[10:]) - min(sent[10:]), 0.1)
+        self.assertEqual(action["x.vel"], 0.3)
+        action, _ = evaluation.smooth_arm_action({k: 90.0}, [{k: 90.0}, {k: 90.0}], {k: 10.0}, 3.0)
+        self.assertEqual(action[k], 13.0)
+
 
 if __name__ == "__main__":
     unittest.main()

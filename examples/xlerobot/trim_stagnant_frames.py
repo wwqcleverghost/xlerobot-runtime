@@ -63,11 +63,12 @@ def main():
     src = LeRobotDataset(args.src)
     names = src.meta.features["action"]["names"]
     assert src.meta.features["observation.state"]["names"] == names
-    pos = [i for i, n in enumerate(names) if n.endswith(".pos")]
+    # Arm joints only: the head servos are not part of the task, and their reading drift is not motion.
+    pos = [i for i, n in enumerate(names) if n.endswith(".pos") and not n.startswith("head_")]
     vel = [i for i, n in enumerate(names) if n.endswith(".vel")]
     table = src.hf_dataset.with_format("numpy")
     actions, states = np.asarray(table["action"]), np.asarray(table["observation.state"])
-    assert not actions[:, vel].any(), "the base moves: keep_range only looks at the arm/head joints"
+    assert not actions[:, vel].any(), "the base moves: keep_range only looks at the arm joints"
     kept = []
     for lo, hi in zip(src.meta.episodes["dataset_from_index"], src.meta.episodes["dataset_to_index"]):
         first, end = keep_range(
