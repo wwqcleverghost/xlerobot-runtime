@@ -253,7 +253,7 @@ class RecordConfig:
     # [eval] Dataset whose median first frame is the reset pose (default: from the policy's train_config.json).
     reset_dataset: str | None = None
     # [eval] Arm reset speed, joint units per second.
-    reset_speed: float = 20.0
+    reset_speed: float = 40.0
     # [eval] Per-frame limit on each .pos joint command for policy actions, with an EMA (alpha 0.8), same as
     # the recording script's smooth_arm_action. Prevents jumps at action-chunk boundaries. 0 disables.
     max_arm_step: float = 3.0
