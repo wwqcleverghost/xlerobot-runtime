@@ -34,7 +34,7 @@ class EvaluationTests(unittest.TestCase):
 
         pynput = ModuleType("pynput")
         pynput.keyboard = SimpleNamespace(
-            Key=SimpleNamespace(right="right", left="left", esc="esc"),
+            Key=SimpleNamespace(right="right", left="left", esc="esc", space="space"),
             Listener=create_listener,
         )
         with patch.dict("sys.modules", {"pynput": pynput}), patch.object(evaluation, "is_headless", return_value=False):
@@ -125,7 +125,7 @@ class EvaluationTests(unittest.TestCase):
                         num_episodes=4, episode_time_s=60, single_task="handover", push_to_hub=False,
                     ),
                     resume=True, display_data=False, play_sounds=False,
-                    reset_dataset=None, reset_speed=20, max_arm_step=3, allow_base=False,
+                    reset_dataset=None, reset_speed=20, max_arm_step=3, allow_base=False, takeover=False,
                 )
                 counts = iter(frame_counts)
 
@@ -174,6 +174,144 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(action["x.vel"], 0.3)
         action, _ = evaluation.smooth_arm_action({k: 90.0}, [{k: 90.0}, {k: 90.0}], {k: 10.0}, 3.0)
         self.assertEqual(action[k], 13.0)
+
+    def test_takeover_aligns_leader_then_records_its_span(self):
+        k = "left_arm_elbow_flex.pos"
+
+        class Bus:  # leader arm servo bus: position follows the last goal while torque is on
+            motors = ["elbow_flex"]
+
+            def __init__(self, silent=False):
+                self.pos, self.torque, self.silent, self.limits = {"elbow_flex": 80.0}, False, silent, []
+
+            def sync_read(self, *_, **__):
+                return dict(self.pos)
+
+            def sync_write(self, name, values, **__):
+                if name == "Torque_Limit":
+                    self.limits.append(values["elbow_flex"])
+                elif self.torque:
+                    self.pos.update(values)
+
+            def enable_torque(self, *_, **__):
+                if self.silent:  # a motor that does not answer, as seen on the real leader
+                    raise ConnectionError("There is no status packet!")
+                self.torque = True
+
+            def disable_torque(self, *_, **__):
+                self.torque = False
+
+        teleop = SimpleNamespace(left_arm=SimpleNamespace(bus=Bus()), right_arm=SimpleNamespace(bus=Bus()))
+        g = "left_arm_gripper.pos"
+        robot = SimpleNamespace(pos=10.0, grip=40.0, action_features={}, robot_type="xlerobot_client")
+        robot.get_observation = lambda: {k: robot.pos, g: robot.grip}
+        grips_sent = []
+
+        def send(a):
+            robot.pos, robot.grip = a[k], a[g]
+            grips_sent.append(a[g])
+            return a
+
+        sent = []
+        robot.send_action = lambda a: (sent.append(a[k]), send(a))[1]
+        dataset = SimpleNamespace(fps=30, features={}, episode_buffer={"size": 0})
+        dataset.add_frame = lambda _: dataset.episode_buffer.update(size=dataset.episode_buffer["size"] + 1)
+        listener, events = self.make_listener()
+        events["recording_active"] = True
+        frames, pushes, squeeze = iter(range(1000)), iter(range(0, 5000, 5)), iter(range(60, -5000, -15))
+        script = {3: "space", 9: "space", 14: "right"}  # takeover after frame 3, back after 9, end at 14
+
+        def tick():  # one control frame, whoever drives it
+            i = next(frames)
+            if i in script:
+                listener.on_press(script[i])
+            return i
+
+        def policy_step(**_):
+            # Before the takeover the policy holds still; after the hand-back it wants to be 50 units away at once.
+            return {k: robot.pos + (50.0 if tick() > 9 else 0.0), g: robot.grip}
+
+        def leader_step():
+            tick()  # the operator moves the leader 5 units further every frame
+            # ...and squeezes the leader gripper from wide open (60) past the held grip (40) to closed
+            return {k: teleop.left_arm.bus.pos["elbow_flex"] + next(pushes), g: float(next(squeeze))}
+
+        teleop.get_action = leader_step
+
+        with patch.object(evaluation, "predict_action", side_effect=policy_step), patch.object(
+            evaluation, "make_robot_action", side_effect=lambda a, _: a
+        ), patch.object(evaluation, "build_dataset_frame", return_value={}), patch.object(
+            evaluation, "precise_sleep"
+        ), patch.object(evaluation.time, "sleep"):
+            spans = evaluation.record_loop(
+                robot=robot, events=events, fps=30, dataset=dataset, teleop=teleop,
+                policy=Mock(config=SimpleNamespace(device="cpu", use_amp=False)), preprocessor=Mock(steps=[]), postprocessor=Mock(), control_time_s=60,
+                teleop_action_processor=lambda x: x[0], robot_action_processor=lambda x: x[0],
+                robot_observation_processor=lambda o: o, max_arm_step=3.0, takeover=True, leader_rest={k: -50.0},
+            )
+        # Takeover: the leader met the follower pose (10), its torque faded out (slowly first, then faster) and
+        # came back to full strength once released. Hand-back: it went to the rest pose (-50), released again.
+        bus = teleop.left_arm.bus
+        self.assertEqual(bus.pos["elbow_flex"], -50.0)
+        self.assertFalse(bus.torque)
+        fade = bus.limits[: bus.limits.index(1000, 1)]
+        self.assertEqual((fade[0], fade[-1]), (1000, 0))
+        drops = [a - b for a, b in zip(fade, fade[1:])]
+        self.assertTrue(all(d >= 0 for d in drops) and drops[-1] > 5 * max(drops[0], 1))
+        self.assertEqual(bus.limits[len(fade)], 1000)
+        self.assertEqual(bus.limits[-1], 1000)
+        self.assertEqual(len(spans), 1)
+        start, end = spans[0]
+        self.assertEqual(start, 4)  # policy frames 0-3 come first
+        self.assertGreater(end - start, 0)
+        self.assertGreater(robot.pos, 10.0)  # the leader moved the robot, at most 3 units per frame
+        self.assertLessEqual(robot.pos, 10.0 + 3.0 * (end - start))
+        # After each switch the command eases (smoothstep, 1 s) from the last command sent: the grip from the
+        # policy's 40 towards the leader's absolute value (45, 30, 15, ...; no step limit), and the arm after
+        # the hand-back towards the policy's far target. Neither jumps on the switch frame.
+        ease = lambda n: (lambda x: x * x * (3 - 2 * x))(min(1.0, n / 30))
+        expected = [40.0 + ease(i + 1) * (45.0 - 15 * i - 40.0) for i in range(end - start)]
+        for got, want in zip(grips_sent[start:end], expected):
+            self.assertAlmostEqual(got, want)
+        steps = [abs(b - a) for a, b in zip(sent, sent[1:])]
+        self.assertLess(steps[end - 1], 0.1)  # first policy command after the hand-back
+        self.assertLess(steps[start - 1], 0.1)  # first leader command after the takeover
+        with tempfile.TemporaryDirectory() as root:
+            evaluation.save_interventions(Path(root), 7, spans)
+            evaluation.save_interventions(Path(root), 8, [])
+            evaluation.save_interventions(Path(root), 9, [(30, 30)])  # space pressed as the episode ended
+            with (Path(root) / "interventions.csv").open(newline="") as f:
+                rows = list(csv.reader(f))
+            self.assertEqual(rows, [["episode", "start_frame", "end_frame"], ["7", str(start), str(end)]])
+
+        # A silent leader motor skips the alignment instead of crashing; torque is released everywhere.
+        teleop.right_arm.bus = Bus(silent=True)
+        evaluation.align_leader(teleop, {k: 10.0, "right_arm_elbow_flex.pos": 10.0}, 30)
+        self.assertFalse(teleop.left_arm.bus.torque or teleop.right_arm.bus.torque)
+
+        # Joints calibrated inside the encoder range are aligned (grippers too); one across the wrap is never driven.
+        bus = Bus()
+        bus.motors, bus.pos = ["elbow_flex", "gripper"], {"elbow_flex": 80.0, "gripper": 50.0}
+        bus.calibration = {"elbow_flex": SimpleNamespace(range_min=900, range_max=3100),
+                           "gripper": SimpleNamespace(range_min=6088, range_max=7298)}
+        teleop.left_arm.bus, teleop.right_arm.bus = bus, Bus()
+        with patch.object(evaluation.time, "sleep"):
+            evaluation.align_leader(teleop, {k: 10.0, "left_arm_gripper.pos": 5.0}, 30, stop=lambda: True)
+        self.assertEqual(bus.pos, {"elbow_flex": 10.0, "gripper": 50.0})
+        bus.calibration["gripper"] = SimpleNamespace(range_min=2031, range_max=3243)
+        with patch.object(evaluation.time, "sleep"):
+            evaluation.align_leader(teleop, {k: 10.0, "left_arm_gripper.pos": 5.0}, 30, stop=lambda: True)
+        self.assertEqual(bus.pos, {"elbow_flex": 10.0, "gripper": 5.0})
+
+        # The episode stopping cuts the fade short; the leader is still released at full torque limit.
+        teleop.left_arm.bus, teleop.right_arm.bus = Bus(), Bus()
+        stops = iter([False] * 5 + [True])
+        with patch.object(evaluation.time, "sleep"):
+            evaluation.align_leader(teleop, {k: 10.0}, 30, stop=lambda: next(stops), show=False)
+        self.assertEqual(teleop.left_arm.bus.pos["elbow_flex"], 10.0)
+        self.assertEqual(len(teleop.left_arm.bus.limits), 6)  # 5 fade steps, then the restore
+        self.assertEqual(teleop.left_arm.bus.limits[-1], 1000)
+        self.assertFalse(teleop.left_arm.bus.torque or teleop.right_arm.bus.torque)
 
 
 if __name__ == "__main__":

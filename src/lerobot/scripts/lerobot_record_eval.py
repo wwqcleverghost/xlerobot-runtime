@@ -109,6 +109,7 @@ import csv
 import json
 import logging
 import math
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -259,6 +260,10 @@ class RecordConfig:
     max_arm_step: float = 3.0
     # Keep the mobile base still during policy evaluation unless explicitly enabled.
     allow_base: bool = False
+    # [eval] With a policy and a leader teleop: space toggles a human takeover mid-episode. On takeover the
+    # leader is driven to the follower's pose first, so control switches without a jump. Takeover frame
+    # ranges go to interventions.csv next to success.csv.
+    takeover: bool = False
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.
@@ -331,7 +336,10 @@ def record_loop(
     display_data: bool = False,
     max_arm_step: float = 0.0,
     allow_base: bool = False,
-):
+    takeover: bool = False,
+    leader_rest: dict | None = None,
+) -> list[tuple[int, int]]:
+    """Returns the [start, end) frame ranges of this episode that were recorded under human takeover."""
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
 
@@ -369,6 +377,12 @@ def record_loop(
     prev_sent = None  # [eval] last command sent, for max_arm_step smoothing
     raw_hist = []  # [eval] previous two policy outputs, for smooth_arm_action
     state_range = train_state_range(preprocessor)
+    events["takeover"] = False
+    human = False  # [eval] the leader currently drives the robot
+    offset = {}  # [eval] follower - leader pose at takeover, added to leader commands so nothing jumps
+    blend_from, blend_frames = None, 0  # [eval] command at the last control switch, eased out over 1 s
+    spans = []
+    homing = None  # [eval] background thread sending the leader to `leader_rest` after a hand-back
 
     timestamp = 0
     start_episode_t = time.perf_counter()
@@ -388,8 +402,45 @@ def record_loop(
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
+        if takeover and events["takeover"] != human:
+            human = events["takeover"]
+            frame = dataset.episode_buffer["size"] if dataset is not None else 0
+            if human:
+                if homing is not None:
+                    homing.join()  # the leader bus is not shared between threads
+                print("Takeover: the leader is moving to the robot pose, hold it lightly...")
+                align_leader(teleop, obs, fps, stop=lambda: events["stop_recording"] or events["exit_early"])
+                leader = teleop.get_action()
+                # Grippers get no offset: they keep the usual teleop mapping (an offset would stop them closing fully).
+                offset = {k: float(obs[k]) - float(v) for k, v in leader.items() if k in obs and "gripper" not in k}
+                worst = max(offset, key=lambda k: abs(offset[k]))
+                print(f"Leader-follower gap after alignment: max {offset[worst]:+.1f} at {worst} (compensated)")
+                spans.append([frame, frame])
+                print("Takeover: you have control. Space hands control back to the policy.")
+            else:
+                spans[-1][1] = frame
+                policy.reset()  # replan from the current observation, not the pre-takeover plan
+                preprocessor.reset()
+                postprocessor.reset()
+                if leader_rest is not None:  # the leader goes back to rest while the policy drives
+                    homing = threading.Thread(
+                        target=align_leader, args=(teleop, leader_rest, fps), kwargs={"show": False}
+                    )
+                    homing.start()
+                print("Policy has control again.")
+            raw_hist = []
+            # Either way, the new source takes over gradually from the last command sent (no jump, no lurch).
+            blend_from = {k: float(v) for k, v in (prev_sent or obs).items() if k.endswith(".pos")}
+            blend_frames = 0
+            continue  # alignment took time; start the next frame from a fresh observation
+
         # Get action from either policy or teleop
-        if policy is not None and preprocessor is not None and postprocessor is not None:
+        if human:
+            leader = teleop.get_action()
+            command = {k: v + offset.get(k, 0.0) for k, v in leader.items()}
+            act_processed_teleop = teleop_action_processor((command, obs))
+            act_processed_policy = None
+        elif policy is not None and preprocessor is not None and postprocessor is not None:
             action_values = predict_action(
                 observation=clip_state(observation_frame, state_range),
                 policy=policy,
@@ -440,7 +491,22 @@ def record_loop(
         # TODO(steven, pepijn, adil): we should use a pipeline step to clip the action, so the sent action is the action that we input to the robot.
         if policy is not None and max_arm_step > 0:
             prev = prev_sent if prev_sent is not None else obs
-            robot_action_to_send, raw_hist = smooth_arm_action(robot_action_to_send, raw_hist, prev, max_arm_step)
+            # Leader commands get only the EMA + step limit, like the recording script (no 3-tap filter),
+            # and leader grippers none: the operator's grip must act at once.
+            grips = {k: v for k, v in robot_action_to_send.items() if human and "gripper" in k}
+            robot_action_to_send, raw_hist = smooth_arm_action(
+                robot_action_to_send, [] if human else raw_hist, prev, max_arm_step
+            )
+            robot_action_to_send.update(grips)
+            if blend_from is not None:  # smoothstep from the switch command to the new source over 1 s
+                blend_frames += 1
+                x = min(1.0, blend_frames / fps)
+                a = x * x * (3 - 2 * x)
+                for k, v0 in blend_from.items():
+                    if k in robot_action_to_send:
+                        robot_action_to_send[k] = v0 + a * (float(robot_action_to_send[k]) - v0)
+                if x >= 1.0:
+                    blend_from = None
             prev_sent = dict(robot_action_to_send)
 
         if policy is not None and not allow_base:
@@ -463,6 +529,12 @@ def record_loop(
         precise_sleep(1 / fps - dt_s)
 
         timestamp = time.perf_counter() - start_episode_t
+
+    if human:
+        spans[-1][1] = dataset.episode_buffer["size"] if dataset is not None else 0
+    if homing is not None:
+        homing.join()
+    return [tuple(s) for s in spans]
 
 
 BASE_STOP = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
@@ -508,6 +580,7 @@ def init_eval_keyboard_listener():
         "rerecord_episode": False,
         "stop_recording": False,
         "recording_active": False,
+        "takeover": False,
     }
     if is_headless():
         return None, events
@@ -524,6 +597,8 @@ def init_eval_keyboard_listener():
             elif key == keyboard.Key.left:
                 events["rerecord_episode"] = True
                 events["exit_early"] = True
+            elif key == keyboard.Key.space:
+                events["takeover"] = not events["takeover"]
 
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
@@ -584,6 +659,77 @@ def reset_arms(robot, target: dict[str, float], fps: int, speed: float) -> None:
         time.sleep(1 / fps)
 
 
+def align_leader(
+    teleop, obs: dict, fps: int, speed: float = 40.0, fade_s: float = 2.0, stop=lambda: False, show: bool = True
+) -> None:
+    """[eval] Best effort: drive both leader arms to the pose in `obs` (cosine-eased, `speed` units/s), then fade
+    their torque out over `fade_s` (slow at first, fast at the end; a shrinking bar shows it) so the operator
+    feels the leader go soft instead of dropping at once, then release it. `stop()` cuts the fade short.
+    A bus error skips the rest; the caller compensates any residual leader-follower gap, so takeover never
+    depends on the leader reaching the pose. A motor calibrated across the encoder wrap (range outside
+    0-4095) is left alone: it turns to its end stop on any goal write."""
+    arms = [getattr(teleop, f"{side}_arm").bus for side in ("left", "right")]
+    moves = []
+    try:
+        for side, bus in zip(("left", "right"), arms):
+            cal = getattr(bus, "calibration", {})
+            joints = [m for m in bus.motors if m not in cal or 0 <= cal[m].range_min <= cal[m].range_max <= 4095]
+            start = bus.sync_read("Present_Position", joints, num_retry=3)
+            target = {m: float(obs[f"{side}_arm_{m}.pos"]) for m in joints if f"{side}_arm_{m}.pos" in obs}
+            bus.sync_write("Goal_Position", start, num_retry=3)  # torque on must not jump to a stale goal
+            if target:  # an arm with nothing to align (no such keys in `obs`) stays limp
+                moves.append((bus, start, target))
+                bus.enable_torque(list(target), num_retry=3)
+        n = int(max(0.5, max((abs(t[m] - s[m]) for _, s, t in moves for m in t), default=0) / speed) * fps)
+        for i in range(1, n + 1):
+            a = 0.5 - 0.5 * math.cos(math.pi * i / n)
+            for bus, s, t in moves:
+                bus.sync_write("Goal_Position", {m: s[m] + a * (t[m] - s[m]) for m in t})
+            time.sleep(1 / fps)
+        time.sleep(0.3)  # let the leader settle on the last goal
+        steps, width = max(1, int(fade_s * fps)), 30
+        for i in range(steps + 1):
+            if stop():
+                break
+            left = 1.0 - (i / steps) ** 2  # torque share still on: drops slowly first, then faster
+            for bus, _, t in moves:
+                bus.sync_write("Torque_Limit", {m: int(1000 * left) for m in t})
+            if show:
+                bar = "█" * round(width * left)
+                print(f"\rLeader torque |{bar:<{width}}| {left:4.0%} ", end="", flush=True)
+            time.sleep(1 / fps)
+        if show:
+            print()
+    except ConnectionError as e:
+        logging.warning(f"Leader alignment skipped after a bus error ({e}); the gap is compensated instead")
+    finally:
+        for bus in arms:
+            for motor in bus.motors:  # one by one: a silent motor must not keep the others stiff
+                try:
+                    bus.disable_torque(motor, num_retry=3)
+                except ConnectionError as e:
+                    logging.warning(f"Could not release leader torque on {motor}: {e}")
+        for bus, _, t in moves:  # full strength again for the next alignment (RAM register, torque is off)
+            try:
+                bus.sync_write("Torque_Limit", dict.fromkeys(t, 1000), num_retry=3)
+            except ConnectionError as e:
+                logging.warning(f"Could not restore leader torque limit: {e}")
+
+
+def save_interventions(root: Path, episode_index: int, spans: list[tuple[int, int]]) -> None:
+    """[eval] Append the takeover frame ranges of a saved episode to interventions.csv (empty ranges skipped)."""
+    spans = [(a, b) for a, b in spans or [] if b > a]
+    if not spans:
+        return
+    csv_path = Path(root) / "interventions.csv"
+    new_file = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(["episode", "start_frame", "end_frame"])
+        writer.writerows([episode_index, a, b] for a, b in spans)
+
+
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
     init_logging()
@@ -591,6 +737,8 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     if cfg.display_data:
         init_rerun(session_name="recording")
 
+    if cfg.takeover and (cfg.policy is None or cfg.teleop is None):
+        raise ValueError("--takeover needs both --policy.path and a leader --teleop")
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
 
@@ -684,7 +832,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             raise RuntimeError("Evaluation requires a desktop keyboard listener; run from a desktop terminal")
 
         # [eval] Auto arm reset + success prompt when a policy runs without a teleoperator.
-        auto_reset = policy is not None and teleop is None
+        auto_reset = policy is not None and (teleop is None or cfg.takeover)
         results = load_success_history(Path(dataset.root) / "success.csv", dataset.num_episodes)
         if results:
             print(f"Saved success rate: {sum(results)}/{len(results)} = {sum(results) / len(results):.0%}")
@@ -693,7 +841,19 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 (Path(cfg.policy.pretrained_path) / "train_config.json").read_text()
             )["dataset"]["repo_id"]
             reset_pose = dataset_start_pose(reset_repo)
-            reset_arms(robot, reset_pose, cfg.dataset.fps, cfg.reset_speed)
+
+            def reset_both():
+                """Follower and (with --takeover) leader go to the rest pose at the same time."""
+                leader = None
+                if cfg.takeover:
+                    kw = {"speed": cfg.reset_speed, "show": False}
+                    leader = threading.Thread(target=align_leader, args=(teleop, reset_pose, cfg.dataset.fps), kwargs=kw)
+                    leader.start()
+                reset_arms(robot, reset_pose, cfg.dataset.fps, cfg.reset_speed)
+                if leader is not None:
+                    leader.join()
+
+            reset_both()
             input(
                 f"Place the object, then press Enter to start trial {dataset.num_episodes + 1} "
                 f"of {cfg.dataset.num_episodes}: "
@@ -708,7 +868,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 events["rerecord_episode"] = False
                 events["recording_active"] = True
                 try:
-                    record_loop(
+                    spans = record_loop(
                         robot=robot,
                         events=events,
                         fps=cfg.dataset.fps,
@@ -725,6 +885,8 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                         display_data=cfg.display_data,
                         max_arm_step=cfg.max_arm_step,
                         allow_base=cfg.allow_base,
+                        takeover=cfg.takeover,
+                        leader_rest=reset_pose if cfg.takeover else None,
                     )
                 finally:
                     events["recording_active"] = False
@@ -740,7 +902,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 if auto_reset:
                     # [eval] Replace the idle reset loop: move arms back, ask for success, start next episode.
                     log_say("Reset the environment", cfg.play_sounds)
-                    reset_arms(robot, reset_pose, cfg.dataset.fps, cfg.reset_speed)
+                    reset_both()
                     if events["stop_recording"]:
                         break
                     if events["rerecord_episode"]:
@@ -752,7 +914,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                         continue
                     success = ask_success()
                     events["exit_early"] = False  # ignore -> presses made while answering
+                    episode_index = dataset.num_episodes
                     save_evaluation_episode(dataset, success, cfg.policy.pretrained_path)
+                    save_interventions(dataset.root, episode_index, spans)
                     results.append(success)
                     print(f"Success rate: {sum(results)}/{len(results)} = {sum(results) / len(results):.0%}")
                     recorded_episodes += 1
