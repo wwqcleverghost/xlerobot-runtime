@@ -13,3 +13,16 @@
 - 若目录不可访问，明确说明共享记忆尚未读取，不要把它视为没有历史记录。
 
 此配置仅用于 `/home/marmotlab/wwq/lerobot` 项目。
+
+# 项目规则
+
+- 评分、命名、数据筛选、训练排队等规则以 git 里的 `docs/` 为准，不以聊天记录为准。要改规则先说明原因并征得用户同意，再改文件。
+- 每次训练或评测记下：git commit、HF 数据集名和 revision（不要只写 `main`）、训练配置。
+- 给人看的或人写的文档（`docs/`、`README`、报告、实验记录）必须中英双语：英文版 `name.md`，中文版 `name.zh.md`，两份内容一致，开头互相链接，改一份就同步改另一份。数字表格和命令输出原样复用。只给 agent 读的指令文件（`CLAUDE.md`、`AGENTS.md`）不需要双语。
+
+# 工作流程文档（做相关任务前先读对应的 README.md）
+
+- `docs/workflows/eval-scoring/` — 评测打分：总分 = 0.5 完成度（分阶段通过率）+ 0.5 质量（抖动、用时、停顿 vs 人类），全部带置信区间，用 report.py 出表和图。
+- `docs/workflows/eval-grid-video/` — 把一次评测（10 个试次）合成 2x5 网格视频。
+- `docs/workflows/handover-dataset-curation/` — 检查、筛选、裁剪、合并交接数据集；含数据集质量检测标准（jerk、峰值速度、停顿）。
+- `docs/workflows/lab-training-queue/` — 在实验室服务器上启动、排队、续训、监控训练。

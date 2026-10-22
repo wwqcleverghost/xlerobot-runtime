@@ -1,22 +1,24 @@
-# 采集数据集质量检测（2026-10-20）
+# Recorded dataset quality check (2026-10-20)
 
-参考 [huggingface/lerobot#3760](https://github.com/huggingface/lerobot/issues/3760)（代码 PR #3762）。
-脚本：`src/lerobot/scripts/lerobot_dataset_quality.py`，只读 parquet 的 `action` 列，不解码视频，不依赖 lerobot 包。
+中文版：[dataset_quality_2026-10-20.zh.md](dataset_quality_2026-10-20.zh.md)
+
+Based on [huggingface/lerobot#3760](https://github.com/huggingface/lerobot/issues/3760) (code PR #3762).
+Script: `src/lerobot/scripts/lerobot_dataset_quality.py`. It reads only the parquet `action` column, decodes no video, and does not depend on the lerobot package.
 
 ```bash
 python src/lerobot/scripts/lerobot_dataset_quality.py ~/.cache/huggingface/lerobot/wwq/handover3 ~/wwq/data/v5-handover-perfect
 ```
 
-## 指标定义（相对上游的改动）
-- 只算 12 维手臂（头部舵机、底盘速度已不参与训练）。
-- 加加速度 jerk = 动作三阶差分 × fps³（上游的 "jerk" 实为二阶差分 = 加速度）；报告中位数和 p95。
-- 峰值速度 maxVel = 一阶差分范数最大值 × fps（归一化单位/s）。
-- 停顿比例 static = 手臂速度 < 3 单位/s 的帧占比（固定阈值，跨数据集可比）；maxPause = 最长连续停顿秒数。
-- 离群：IQR 规则 k=1.5，另加末帧姿态离均值距离 final_dist。
+## Metric definitions (changes vs. upstream)
+- Only the 12 arm dims are used (head servos and base velocities are no longer trained on).
+- Jerk = third difference of actions × fps³ (upstream's "jerk" is actually the second difference = acceleration); median and p95 reported.
+- Peak velocity maxVel = max norm of the first difference × fps (normalized units/s).
+- Pause fraction static = share of frames with arm speed < 3 units/s (fixed threshold, comparable across datasets); maxPause = longest continuous pause in seconds.
+- Outliers: IQR rule with k=1.5, plus final_dist = distance of the final pose from the mean.
 
-## 汇总（各 episode 中位数）
+## Summary (median over episodes)
 
-| 数据集 | ep | 标记 | 时长s | jerk中位 | jerk p95 | 峰值速度 | 停顿比例 | 最长停顿s |
+| Dataset | ep | flagged | dur s | median jerk | jerk p95 | peak vel | pause frac | max pause s |
 |---|---|---|---|---|---|---|---|---|
 | handover3 | 50 | 15 | 23.9 | **18147** | **105679** | **373** | 21.7% | 2.6 |
 | handover4 | 50 | 7 | 24.8 | 9078 | 38060 | 186 | 25.8% | 2.5 |
@@ -24,23 +26,23 @@ python src/lerobot/scripts/lerobot_dataset_quality.py ~/.cache/huggingface/lerob
 | v5-handover-perfect | 75 | 17 | 19.0 | 14154 | 48599 | 204 | 6.2% | 0.3 |
 | handover-perfect-strict | 64 | 12 | 18.2 | 13786 | 46545 | 203 | 5.6% | 0.3 |
 
-## 数据来源（逐帧比对确认）
-- `v4-handover2-trimmed` = `wwq/handover4` 裁掉等待帧，顺序不变。
-- `v5-handover-perfect` = ep0–44 来自 handover4（去掉 h4 ep3,4,5,26,32）+ ep45–74 来自 `wwq/handover3`。
-  - 映射 v5→h3：45→0 46→1 47→5 48→9 49→11 50→12 51→14 52→17 53→18 54→19 55→20 56→22 57→24 58→25 59→26 60→27 61→28 62→29 63→32 64→33 65→34 66→35 67→37 68→38 69→40 70→41 71→42 72→43 73→44 74→48
-- `handover-perfect-strict` = v5 删 11 个 ep，仍含 handover3 部分。
-- `wwqcleverghost/handover1` 与 `handover3` parquet 完全相同。
+## Provenance (confirmed by frame-by-frame comparison)
+- `v4-handover2-trimmed` = `wwq/handover4` with waiting frames trimmed, order unchanged.
+- `v5-handover-perfect` = ep0–44 from handover4 (dropping h4 ep3,4,5,26,32) + ep45–74 from `wwq/handover3`.
+  - Mapping v5→h3: 45→0 46→1 47→5 48→9 49→11 50→12 51→14 52→17 53→18 54→19 55→20 56→22 57→24 58→25 59→26 60→27 61→28 62→29 63→32 64→33 65→34 66→35 67→37 68→38 69→40 70→41 71→42 72→43 73→44 74→48
+- `handover-perfect-strict` = v5 minus 11 episodes; still contains the handover3 part.
+- `wwqcleverghost/handover1` and `handover3` have identical parquet files.
 
-## 结论
-1. **v5 混了两种操作风格**：handover3 部分 jerk 约为 handover4 部分的 2–5 倍，峰值速度约 2 倍。
-2. **handover3 越录越快越抖**：ep0–8 jerk≈1 万，ep39–48 升到 3–5 万；时长 28s→17s。
-3. v5 离群集中在尾部：ep70–74 jerk 超标（72/73/74 的 p95 也超标），ep49/52/53/54 时长偏长，ep62 停顿 2.4s。
-4. 裁剪有效：停顿 26%→6%，最长停顿 2.5s→0.3s。裁剪后 jerk 中位数变高只是因为删掉了静止帧，不是动作变抖。
-5. handover3 原始 ep8、ep10 分别停顿 18s、24s，未进入 v5。
+## Conclusions
+1. **v5 mixes two operator styles**: the handover3 part has ~2–5× the jerk and ~2× the peak velocity of the handover4 part.
+2. **handover3 gets faster and jerkier over the session**: jerk ≈10k for ep0–8, rising to 30–50k for ep39–48; duration 28s→17s.
+3. v5 outliers cluster at the tail: ep70–74 exceed the jerk threshold (72/73/74 also on p95), ep49/52/53/54 run long, ep62 pauses 2.4s.
+4. Trimming works: pause fraction 26%→6%, longest pause 2.5s→0.3s. Median jerk rises after trimming only because static frames were removed, not because motion got jerkier.
+5. Raw handover3 ep8 and ep10 pause for 18s and 24s; neither made it into v5.
 
-**建议（待验证）**：做对照变体 `v5-handover-perfect-noh3`（只保留 v5 ep0–44），检验混入快而抖的示范是否导致策略抖动或静止不动。
+**Suggestion (unverified)**: build a control variant `v5-handover-perfect-noh3` (v5 ep0–44 only) to test whether mixing in the fast, jerky demos makes the policy jitter or freeze.
 
-## 逐 episode 明细
+## Per-episode details
 
 ```text
 

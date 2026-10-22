@@ -1,0 +1,64 @@
+# Handover eval scoring
+
+中文版：[README.zh.md](README.zh.md)
+
+Each model gets one score in 0-1: **total = 0.5 x completion + 0.5 x quality**, every number with a 95% confidence
+interval (CI). The CI width comes from the number of trials: 10 trials give wide intervals, so two models are only
+different when their intervals do not overlap. Rules agreed with the user on 2026-10-23.
+
+```bash
+python docs/workflows/eval-scoring/report.py <out_prefix> <human_ref_demo_dir> <dataset_dir> ...
+```
+
+- `human_ref_demo_dir`: human reference demos, currently `wwqcleverghost/v4-handover2-trimmed`.
+- `dataset_dir`: eval datasets (have `success.csv`) and/or demo datasets (quality only). Datasets nested in `dataset/` work.
+- Writes `<out_prefix>.csv` (one row per dataset, all scores and CIs) and `<out_prefix>.svg` (one stacked bar per
+  dataset: blue = 0.5 x completion, orange = 0.5 x quality, whisker = CI of the total; demo datasets draw completion as a
+  dashed 1.0 box for comparison). Put results in `outputs/eval_scores_<date>/`. Example: `outputs/eval_scores_20261023/`.
+- Reads only `observation.state` and `action`; no video. lerobot env (no matplotlib needed).
+
+## Completion (evals only)
+
+Five stages, detected from the grippers by `score.py` (holding = commanded closed while the measured position stalls
+>= 2 units above the command for >= 0.5 s):
+1. reach (前往) — an arm moved > 30 units and opened its gripper
+2. grasp (抓住) — the tape is held (regrasps allowed)
+3. no drop (交接前不掉) — the other arm starts holding before the first lets go
+4. handover (交接成功) — both hold >= 0.5 s, then the first arm opens
+5. place (放好) — the second arm opens afterwards
+
+- **Stage pass rate = (passed + 1) / (reached + 2)**. A trial that never reached a stage does not count against it.
+  The +1/+2 pulls stages with few trials toward 0.5 (1/2 becomes 0.5, 7/7 becomes 0.89).
+- Each stage rate is **truncated**: rate <= 0.5 scores 0, 1.0 scores 1, linear in between. Completion = mean of the
+  5 truncated rates.
+- The human success label in `success.csv` is final (no video review): label success -> all stages pass; label fail
+  but all 5 auto stages pass -> place fails. Auto and human agreed on 105/110 trials (2026-10-20).
+- Also reported, not in the score: plain success rate (e.g. 7/10) with a Wilson CI, and each stage as
+  `passed/reached [CI]` (the funnel: shows where a model fails).
+
+## Quality (evals and demo datasets)
+
+Per trial, weighted, compared with the human reference median:
+- **smooth (0.4)** — small joint reversals per second of motion (`smooth.py`: 0.5 dead band, swing < 5)
+- **speed (0.3)** — task time from first motion to the place release; successful trials only
+- **idle (0.3)** — share of the task spent standing still (< 5 units/s for >= 0.5 s)
+
+smooth and speed score **1 at or better than the human median, 0.5 at 2x worse, 0 at 4x worse** (each doubling costs
+half). idle = 1 - idle share, truncated like the stage rates. Human demos themselves score about 0.9 (half of them are
+worse than their own median); this is not comparable with numbers from other projects.
+
+## Uncertainty
+
+Stage and success rates: Wilson 95% CI. Completion, quality and total: bootstrap over trials (2000 resamples, 2.5-97.5
+percentiles). 10 trials cannot separate 7/10 from 4/10 (Fisher p ≈ 0.37); say so when intervals overlap, and prefer
+more trials of the top models over finer scoring.
+
+## Optional: look at a trial
+
+Only when asked to explain a failure. Contact sheets, one cell every 2 s, or every 1/3 s for a window:
+`PYTHONPATH=src python docs/workflows/eval-scoring/sheets.py <eval_dataset_dir> <out_dir> [<ep> <t0> <t1>]`.
+Gripper captions `L cmd/state`: 1 = closed; holding = command ~1-5 with state clearly higher; slip = state falls to the
+command while it stays closed; release = command opens first. Tape hidden from the head camera at grasp time is normal.
+
+History: before 2026-10-23 trials were scored 0-5 with every stage after the first failure counted as 0, and
+smoothness was reported separately. HF `wwqcleverghost/eval-scores-v4-v5` holds those scores.
