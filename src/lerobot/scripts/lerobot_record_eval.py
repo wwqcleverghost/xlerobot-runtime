@@ -849,6 +849,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     kw = {"speed": cfg.reset_speed, "show": False}
                     leader = threading.Thread(target=align_leader, args=(teleop, reset_pose, cfg.dataset.fps), kwargs=kw)
                     leader.start()
+                # Open the grippers fully on the way (RANGE_0_100: 100 = open), then close to the rest value.
+                opened = {k: 100.0 if "gripper" in k else v for k, v in reset_pose.items()}
+                reset_arms(robot, opened, cfg.dataset.fps, cfg.reset_speed)
                 reset_arms(robot, reset_pose, cfg.dataset.fps, cfg.reset_speed)
                 if leader is not None:
                     leader.join()
