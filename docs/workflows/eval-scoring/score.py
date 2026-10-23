@@ -21,8 +21,14 @@ def score(st, ac):
     opened = {k: (st[:, g] > OPEN).any() for k, g in GR.items()}
     stg = [0] * 5; tdone = None
     stg[0] = int(any(moved[k] and opened[k] for k in 'LR'))
+    # B tried to take the tape: its open gripper got commanded closed while A was holding. Counts as reaching
+    # the handover with the tape still held (no drop) even when B never holds it for MIN frames.
+    closing = {k: (ac[:, g] < OPEN) & np.r_[False, st[:-1, g] > OPEN] for k, g in GR.items()}
+    def attempt(A, B):
+        return moved[B] and opened[B] and any(closing[B][s:e + 5].any() for s, e in hr[A])
     if stg[0] and any(hr.values()):
         stg[1] = 1   # any arm held the tape; regrasps allowed, so search every hold pair for a handover
+        stg[2] = int(attempt('L', 'R') or attempt('R', 'L'))
         for A, B in (('L', 'R'), ('R', 'L')):
             for _, a_end in hr[A]:
                 for _, be in hr[B]:

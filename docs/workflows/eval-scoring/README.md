@@ -23,7 +23,9 @@ Five stages, detected from the grippers by `score.py` (holding = commanded close
 >= 2 units above the command for >= 0.5 s):
 1. reach (前往) — an arm moved > 30 units and opened its gripper
 2. grasp (抓住) — the tape is held (regrasps allowed)
-3. no drop (交接前不掉) — the other arm starts holding before the first lets go
+3. no drop (交接前不掉) — while the first arm still holds, the other arm starts holding or its open gripper is
+   commanded closed (a take-over attempt). A failed take-over counts against "handover", not here (fixed
+   2026-10-23; before that v6-flow_h16_s8 ep18 and ep34 were misattributed to this stage)
 4. handover (交接成功) — both hold >= 0.5 s, then the first arm opens
 5. place (放好) — the second arm opens afterwards
 
