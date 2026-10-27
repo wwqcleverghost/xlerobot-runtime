@@ -3,8 +3,8 @@
 Cuts every episode into its own clip per camera (stream copy, the frames training sees) and writes a page
 with a camera picker, playback speed and paging (arrow keys). Then serve it:
 
-    python examples/xlerobot/preview_episodes.py ~/.cache/huggingface/lerobot/wwqcleverghost/handover \
-        --original ~/.cache/huggingface/lerobot/wwqcleverghost/handover4 --out outputs/preview_handover
+    python examples/xlerobot/preview_episodes.py ~/.cache/huggingface/lerobot/wwqcleverghost/v3-handover2-trimmed \
+        --original ~/.cache/huggingface/lerobot/wwqcleverghost/v2-handover2 --out outputs/preview_handover
     python -m http.server 8765 --directory outputs/preview_handover
 """
 

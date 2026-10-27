@@ -34,20 +34,24 @@ def trials(path):
     d = pd.concat(pd.read_parquet(f) for f in sorted(glob.glob(f"{path}/data/*/*.parquet")))
     csv = f"{path}/success.csv"
     lab = pd.read_csv(csv).set_index("episode").success if os.path.exists(csv) else None
-    rows = []
-    for ep, g in d.groupby("episode_index"):
-        st, ac = np.stack(g["observation.state"].values), np.stack(g["action"].values)
-        r = score(st, ac)
-        rev, moving_s = ep_metrics(st)
-        stg = list(r["stage"])
-        if lab is not None:  # human label overrides the auto result for task success
-            stg = [1] * 5 if lab[ep] else (stg[:4] + [0] if all(stg) else stg)
-        ok = all(stg) if lab is not None else r["done"] is not None
-        end = r["done"] if r["done"] else r["dur"]
-        task_s = max(end - r["start"], 1e-6)
-        rows.append(dict(ep=ep, **dict(zip(STAGES, stg)), success=int(ok), rev_rate=rev / moving_s,
-                         task_s=task_s if ok and r["done"] else np.nan, idle_frac=min(r["idle"] / task_s, 1.0)))
+    rows = [dict(ep=ep, **trial(np.stack(g["observation.state"].values), np.stack(g["action"].values),
+                                None if lab is None else lab[ep]))
+            for ep, g in d.groupby("episode_index")]
     return pd.DataFrame(rows), lab is not None
+
+
+def trial(st, ac, label=None):
+    """One episode's stages and quality inputs; label = human success (None for demos)."""
+    r = score(st, ac)
+    rev, moving_s = ep_metrics(st)
+    stg = list(r["stage"])
+    if label is not None:  # human label overrides the auto result for task success
+        stg = [1] * 5 if label else (stg[:4] + [0] if all(stg) else stg)
+    ok = all(stg) if label is not None else r["done"] is not None
+    end = r["done"] if r["done"] else r["dur"]
+    task_s = max(end - r["start"], 1e-6)
+    return dict(**dict(zip(STAGES, stg)), success=int(ok), rev_rate=rev / moving_s,
+                task_s=task_s if ok and r["done"] else np.nan, idle_frac=min(r["idle"] / task_s, 1.0))
 
 
 def trunc(x):

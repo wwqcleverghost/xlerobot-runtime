@@ -73,11 +73,21 @@ class DiffusionPolicy(PreTrainedPolicy):
         self._queues = None
 
         self.diffusion = DiffusionModel(config)
+        if config.feedback:  # only the feedback module trains, the planner stays as phase 1 left it
+            self.diffusion.requires_grad_(False)
+            self.diffusion.feedback.requires_grad_(True)
 
         self.reset()
 
     def get_optim_params(self) -> dict:
-        return self.diffusion.parameters()
+        return (self.diffusion.feedback if self.config.feedback else self.diffusion).parameters()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.config.feedback:  # the frozen planner runs as at inference (center crop) during training too
+            self.diffusion.eval()
+            self.diffusion.feedback.train(mode)
+        return self
 
     def reset(self):
         """Clear observation and action queues. Should be called on `env.reset()`"""
@@ -135,6 +145,19 @@ class DiffusionPolicy(PreTrainedPolicy):
         # NOTE: It's important that this happens after stacking the images into a single key.
         self._queues = populate_queues(self._queues, batch)
 
+        if self.config.feedback:
+            # The ACTION queue holds the plan's rows instead, one per step of the chunk. Each action gets its
+            # last denoising step right before it runs, from a frame refreshed every feedback_every steps.
+            queue = self._queues[ACTION]
+            if len(queue) == 0:
+                stacked = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
+                queue.extend(self.diffusion.feedback_plan(stacked, noise=noise).transpose(0, 1))
+            if (self.config.n_action_steps - len(queue)) % self.config.feedback_every == 0:
+                self._feedback_obs = self.diffusion.feedback_obs(batch)
+            action = self.diffusion.feedback_action(queue.popleft(), *self._feedback_obs)
+            r = self.config.clip_sample_range
+            return action.clamp(-r, r) if self.config.clip_sample else action
+
         if len(self._queues[ACTION]) == 0:
             actions = self.predict_action_chunk(batch, noise=noise)
             self._queues[ACTION].extend(actions.transpose(0, 1))
@@ -185,6 +208,10 @@ class DiffusionModel(nn.Module):
             global_cond_dim += self.config.env_state_feature.shape[0]
 
         self.unet = DiffusionConditionalUnet1d(config, global_cond_dim=global_cond_dim * config.n_obs_steps)
+
+        if config.feedback:
+            encoder = self.rgb_encoder[0] if config.use_separate_rgb_encoder_per_camera else self.rgb_encoder
+            self.feedback = DiffusionFeedback(config, encoder.feature_map_shape)
 
         if config.noise_scheduler_type == "FLOW":
             self.noise_scheduler = None  # flow matching needs no diffusers scheduler
@@ -367,6 +394,71 @@ class DiffusionModel(nn.Module):
             actions = actions.clamp(-self.config.clip_sample_range, self.config.clip_sample_range)
         return actions, buffer
 
+    # ========= feedback denoising (config.feedback) ============
+    def feedback_plan(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
+        """The frozen planner's part, once per chunk: Euler steps from noise down to tau = 1/n, then the U-Net
+        at that level. Returns (B, n_action_steps, 2 * action_dim + down_dims[0]), one row per executed
+        action: its near-clean value, the planner's own last velocity and the U-Net features there."""
+        global_cond = self._prepare_global_conditioning(batch)
+        x = noise
+        if x is None:
+            x = torch.randn(
+                (global_cond.shape[0], self.config.horizon, self.config.action_feature.shape[0]),
+                dtype=get_dtype_from_parameters(self),
+                device=get_device_from_parameters(self),
+            )
+        n = self.num_inference_steps
+        for k in range(n - 1):
+            tau = torch.full(x.shape[:1], 1 - k / n, dtype=x.dtype, device=x.device)
+            x = x - self._flow_velocity(x, tau, global_cond) / n
+        tau = torch.full(x.shape[:1], 1 / n, dtype=x.dtype, device=x.device)
+        velocity, features = self.unet(
+            x, tau * self.config.num_train_timesteps, global_cond=global_cond, return_features=True
+        )
+        start = self.config.n_obs_steps - 1
+        return torch.cat([x, velocity, features], dim=-1)[:, start : start + self.config.n_action_steps]
+
+    def feedback_obs(self, batch: dict[str, Tensor]) -> tuple[Tensor, Tensor | None]:
+        """Feature maps of one frame's (B, n_cams, C, H, W) images, and its state if the module uses it."""
+        state = batch[OBS_STATE] if self.config.feedback_state else None
+        return self._feature_maps(batch[OBS_IMAGES]), state
+
+    def feedback_action(self, plan: Tensor, maps: Tensor, state: Tensor | None) -> Tensor:
+        """Last denoising step of (N, ...) plan rows with the module's correction: (N, action_dim) actions."""
+        a = self.config.action_feature.shape[0]
+        x, velocity, features = plan.split([a, a, plan.shape[-1] - 2 * a], dim=-1)
+        return x - (velocity + self.feedback(features, maps, state)) / self.num_inference_steps
+
+    def _feature_maps(self, images: Tensor) -> Tensor:
+        """(N, n_cams, C, H, W) frames -> (N, n_cams, c, h, w) maps of the planner's image encoder(s)."""
+        if self.config.use_separate_rgb_encoder_per_camera:
+            maps = [enc.feature_map(images[:, i]) for i, enc in enumerate(self.rgb_encoder)]
+            return torch.stack(maps, dim=1)
+        return self.rgb_encoder.feature_map(images.flatten(0, 1)).unflatten(0, images.shape[:2])
+
+    def _feedback_loss(self, batch: dict[str, Tensor]) -> Tensor:
+        """Final executed actions against the demonstration. The observations hold the planner's n_obs_steps
+        frames, then every feedback_every-th later step of the chunk (`observation_delta_indices`): action j
+        of the chunk sees the frame of step j - j % feedback_every, as it does at inference."""
+        n_obs, n_act = self.config.n_obs_steps, self.config.n_action_steps
+        planner_batch = {
+            k: batch[k][:, :n_obs] for k in (OBS_STATE, OBS_IMAGES, OBS_ENV_STATE) if k in batch
+        }
+        with torch.no_grad():
+            plan = self.feedback_plan(planner_batch)
+            frames = batch[OBS_IMAGES][:, n_obs - 1 :]
+            maps = self._feature_maps(frames.flatten(0, 1)).unflatten(0, frames.shape[:2])
+        frame = torch.arange(n_act, device=plan.device) // self.config.feedback_every
+        state = None
+        if self.config.feedback_state:
+            state = batch[OBS_STATE][:, n_obs - 1 :][:, frame].flatten(0, 1)
+        pred = self.feedback_action(plan.flatten(0, 1), maps[:, frame].flatten(0, 1), state)
+        target = batch[ACTION][:, n_obs - 1 : n_obs - 1 + n_act]
+        loss = F.mse_loss(pred.view_as(target), target, reduction="none")
+        if self.config.do_mask_loss_for_padding:
+            loss = loss * ~batch["action_is_pad"][:, n_obs - 1 : n_obs - 1 + n_act, None]
+        return loss.mean()
+
     def compute_loss(self, batch: dict[str, Tensor]) -> Tensor:
         """
         This function expects `batch` to have (at least):
@@ -381,6 +473,8 @@ class DiffusionModel(nn.Module):
             "action_is_pad": (B, horizon)
         }
         """
+        if self.config.feedback:
+            return self._feedback_loss(batch)
         # Input validation.
         assert set(batch).issuperset({OBS_STATE, ACTION, "action_is_pad"})
         assert OBS_IMAGES in batch or OBS_ENV_STATE in batch
@@ -566,20 +660,15 @@ class DiffusionRgbEncoder(nn.Module):
         images_shape = next(iter(config.image_features.values())).shape
         dummy_shape_h_w = config.crop_shape or config.resize_shape or images_shape[1:]
         dummy_shape = (1, images_shape[0], *dummy_shape_h_w)
-        feature_map_shape = get_output_shape(self.backbone, dummy_shape)[1:]
+        self.feature_map_shape = get_output_shape(self.backbone, dummy_shape)[1:]
 
-        self.pool = SpatialSoftmax(feature_map_shape, num_kp=config.spatial_softmax_num_keypoints)
+        self.pool = SpatialSoftmax(self.feature_map_shape, num_kp=config.spatial_softmax_num_keypoints)
         self.feature_dim = config.spatial_softmax_num_keypoints * 2
         self.out = nn.Linear(config.spatial_softmax_num_keypoints * 2, self.feature_dim)
         self.relu = nn.ReLU()
 
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Args:
-            x: (B, C, H, W) image tensor with pixel values in [0, 1].
-        Returns:
-            (B, D) image feature.
-        """
+    def feature_map(self, x: Tensor) -> Tensor:
+        """(B, C, H, W) image -> (B, c, h, w) backbone feature map (`feature_map_shape`)."""
         # Preprocess: maybe resize, then maybe crop (if they were set up in the __init__).
         if self.resize_shape is not None:
             x = F.interpolate(x, size=tuple(self.resize_shape), mode="bilinear", align_corners=False, antialias=True)
@@ -589,8 +678,17 @@ class DiffusionRgbEncoder(nn.Module):
             else:
                 # Always use center crop for eval.
                 x = self.center_crop(x)
+        return self.backbone(x)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Args:
+            x: (B, C, H, W) image tensor with pixel values in [0, 1].
+        Returns:
+            (B, D) image feature.
+        """
         # Extract backbone feature.
-        x = torch.flatten(self.pool(self.backbone(x)), start_dim=1)
+        x = torch.flatten(self.pool(self.feature_map(x)), start_dim=1)
         # Final linear layer with non-linearity.
         x = self.relu(self.out(x))
         return x
@@ -746,13 +844,16 @@ class DiffusionConditionalUnet1d(nn.Module):
             nn.Conv1d(config.down_dims[0], config.action_feature.shape[0], 1),
         )
 
-    def forward(self, x: Tensor, timestep: Tensor | int, global_cond=None) -> Tensor:
+    def forward(
+        self, x: Tensor, timestep: Tensor | int, global_cond=None, return_features: bool = False
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """
         Args:
             x: (B, T, input_dim) tensor for input to the Unet.
             timestep: (B,) tensor of (timestep_we_are_denoising_from - 1).
             global_cond: (B, global_cond_dim)
             output: (B, T, input_dim)
+            return_features: also return the (B, T, down_dims[0]) features the last 1x1 convolution reads.
         Returns:
             (B, T, input_dim) diffusion model prediction.
         """
@@ -785,9 +886,10 @@ class DiffusionConditionalUnet1d(nn.Module):
             x = resnet2(x, global_feature)
             x = upsample(x)
 
-        x = self.final_conv(x)
-
-        x = einops.rearrange(x, "b d t -> b t d")
+        features = self.final_conv[0](x)
+        x = einops.rearrange(self.final_conv[1](features), "b d t -> b t d")
+        if return_features:
+            return x, einops.rearrange(features, "b d t -> b t d")
         return x
 
 
@@ -847,3 +949,39 @@ class DiffusionConditionalResidualBlock1d(nn.Module):
         out = self.conv2(out)
         out = out + self.residual_conv(x)
         return out
+
+
+class DiffusionFeedback(nn.Module):
+    """Feedback denoising module of VLA-Feedback (arXiv 2609.21022; sizes from its code release). One executed
+    action's U-Net features query the cells of the latest frame's feature maps (and the joint state) through
+    a pre-norm Transformer decoder layer, mixed back in through a learnable gate. Unlike the paper, the result
+    is added to the frozen planner's own last velocity and the head starts at zero: before training the policy
+    acts exactly like the planner, so any difference after phase 2 comes from what the module learned."""
+
+    def __init__(self, config: DiffusionConfig, map_shape: tuple[int, int, int], d_model: int = 256):
+        super().__init__()
+        channels, h, w = map_shape
+        self.act_proj = nn.Linear(config.down_dims[0], d_model)
+        self.obs_proj = nn.Linear(channels, d_model)
+        state_dim = config.robot_state_feature.shape[0]
+        self.state_proj = nn.Linear(state_dim, d_model) if config.feedback_state else None
+        # Which camera and cell (or the state) each token comes from.
+        n_tokens = len(config.image_features) * h * w + int(config.feedback_state)
+        self.token_pos = nn.Parameter(0.02 * torch.randn(n_tokens, d_model))
+        self.layer = nn.TransformerDecoderLayer(
+            d_model, 4, dim_feedforward=512, dropout=0.0, activation="gelu", batch_first=True, norm_first=True
+        )
+        self.gate = nn.Parameter(torch.tensor(0.3))
+        self.head = nn.Linear(d_model, config.action_feature.shape[0])
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
+
+    def forward(self, features: Tensor, maps: Tensor, state: Tensor | None) -> Tensor:
+        """features (N, down_dims[0]), maps (N, n_cams, c, h, w), state (N, state_dim) or None ->
+        (N, action_dim) velocity correction."""
+        query = self.act_proj(features)[:, None]
+        tokens = self.obs_proj(einops.rearrange(maps, "n k c h w -> n (k h w) c"))
+        if self.state_proj is not None:
+            tokens = torch.cat([tokens, self.state_proj(state)[:, None]], dim=1)
+        out = self.layer(query, tokens + self.token_pos)
+        return self.head(query + self.gate * (out - query))[:, 0]

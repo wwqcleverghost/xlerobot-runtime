@@ -12,6 +12,13 @@ Scripts in this directory (copy to the machine with rsync, never scp over a runn
 - `queue_v3.sh` — runs Flow jobs one after another on one GPU: `flow`, `flow:strict`,
   `flow:sepenc`, `flow:noshift`; names start with `dp_` consistently on disk, HF and W&B (V5 data). Skips finished runs, resumes from
   the last checkpoint after a crash (5 tries). `WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`
+  `fb:<base>`, `fbstale:<base>`, `fbstate:<base>` train feedback denoising ("Catch Me If You Can",
+  `--policy.feedback`) on top of the finished flow run `<base>`, on its dataset, as `<base>_fb` etc.: frozen
+  planner, only a ~1M-parameter module trains, 40K steps, batch 12, 6 workers (9 frames per camera per sample,
+  about 1.2 GB per batch). `fbstale` is the control without fresh frames, `fbstate` also sees the joint state.
+  `fb:<base>@<step>` uses the checkpoint at `<step>` as the planner and starts as soon as it is saved
+  (`<base>_fb_p<step/1000>k`). `flow:v7` = `v7-flow_h16_s8` on `v7-handover-clean`, 140K steps; when it finishes
+  only the last three checkpoints are kept, all complete.
 - `finish_v2.sh` — finishes `d2t_*_v2` REACT runs on `data/handover2-trimmed-v2` (V4, 50 episodes): resume
   with the canonical dataset ID and root, or restart from scratch.
 - `prune_checkpoints.py <run-output-dir>` — keeps the last three model snapshots and only the latest full

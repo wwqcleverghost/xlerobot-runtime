@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "v6-trim-review",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "docs/workflows/handover-dataset-curation/serve.py",
+        "outputs/v6_trim_review",
+        "8766"
+      ],
+      "port": 8766
+    },
+    {
+      "name": "dataset-viewer",
+      "runtimeExecutable": "/home/wwq/miniconda3/envs/lerobot/bin/python",
+      "runtimeArgs": [
+        "docs/workflows/dataset-viewer/server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "src"
+      },
+      "port": 8770
+    }
+  ]
+}

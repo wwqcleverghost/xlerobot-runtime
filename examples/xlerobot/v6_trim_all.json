@@ -1,0 +1,4 @@
+[
+ {"repo": "wwqcleverghost/v2-handover2", "note": "v6 trim (user 2026-10-25): all 50 episodes; head = first leader input (2 deg rule), tail = reset basically done (--reset_tol 10, operator fine-tuning after it cut); pauses and snaps kept, only marked on the review page", "range": {"1": [73, 601], "41": [80, 632], "25": [37, 733], "14": [60, 603], "19": [90, 626], "35": [153, 791]}, "drop": [1, 14, 19, 25, 35]},
+ {"repo": "wwqcleverghost/v1-handover1", "note": "same rule as handover2", "range": {"35": [198, 815], "33": [52, 513], "32": [113, 558], "30": [186, 613], "28": [84, 577], "27": [51, 592], "29": [192, 730]}, "drop": [27, 28, 30, 32, 33, 35]}
+]

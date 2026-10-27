@@ -12,6 +12,12 @@ English: [README.md](README.md)
 - `queue_v3.sh` — 在一张 GPU 上依次跑 Flow 任务：`flow`、`flow:strict`、
   `flow:sepenc`、`flow:noshift`；名字在磁盘、HF、W&B 上统一以 `dp_` 开头（V5 数据）。跳过已完成的 run，崩溃后从
   最后一个 checkpoint 续训（最多 5 次）。`WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`
+  `fb:<base>`、`fbstale:<base>`、`fbstate:<base>` 在已完成的 flow run `<base>` 之上、用它的数据集训练反馈去噪
+  （“Catch Me If You Can”，`--policy.feedback`），名字为 `<base>_fb` 等：planner 冻结，只训练约 1M 参数的小模块，
+  40K 步，batch 12，6 个 worker（每个样本每个相机读 9 帧，每个 batch 约 1.2 GB）。`fbstale` 是不给新帧的对照组，
+  `fbstate` 额外输入关节状态。
+  `fb:<base>@<step>` 用 `<step>` 处的 checkpoint 当 planner，那个 checkpoint 一存好就启动（`<base>_fb_p<step/1000>k`）。
+  `flow:v7` = 在 `v7-handover-clean` 上训练 `v7-flow_h16_s8`，140K 步；跑完只保留最后三个 checkpoint，三个都完整。
 - `finish_v2.sh` — 在 `data/handover2-trimmed-v2`（V4，50 个 episode）上完成 `d2t_*_v2` REACT run：用规范的数据集 ID 和 root 续训，
   或从头重训。
 - `prune_checkpoints.py <run-output-dir>` — 保留最后三个模型快照，只保留最新的完整训练状态。删除前先验证发布出去的

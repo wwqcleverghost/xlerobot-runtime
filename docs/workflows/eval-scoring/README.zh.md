@@ -49,6 +49,23 @@ python docs/workflows/eval-scoring/report.py <out_prefix> <human_ref_demo_dir> <
 阶段通过率和成功率：Wilson 95% 置信区间。完成度、质量、总分：按试次自助抽样（2000 次，取 2.5–97.5 百分位）。
 10 次试验分不出 7/10 和 4/10（Fisher p ≈ 0.37）；区间重叠时要说明，宁可给前几名模型多测几次，也不要把打分做得更细。
 
+## 可选：挑评测试次当训练数据（极严，2026-10-23 用户同意加）
+
+只保留每一项都不比人类示范差的成功试次，以下全部满足才保留：
+1. 人工标成功，并且 5 个自动阶段全过；
+2. 不重抓：每只手臂夹爪闭合不超过 2 次（不用"抓住次数"，因为一次抓取常被拆成两段，人类示范也这样）；
+3. 质量三项全是 1 分：平滑、速度都不比人类中位数差，任务中没有停顿；
+4. 数据集整理清单：最后一帧头部画面桌上看得到胶带，先抓的手臂符合中线规则（L x<=0.49，R x>=0.51）。
+
+开始时胶带是否立着单帧判不准，保留下来的试次要用 `sheets.py` 看一眼。
+
+```bash
+PYTHONPATH=src:docs/workflows/eval-scoring:docs/workflows/handover-dataset-curation:examples/xlerobot \
+  python docs/workflows/eval-scoring/select_strict.py <out_prefix> <human_ref_demo_dir> <eval_dir> ...
+```
+输出 `<out_prefix>.csv`（每个试次每项是否通过）和 `<out_prefix>_spec.json`（给 `trim_stagnant_frames.py --spec` 用）。
+评测数据是 12 维（没有头部舵机和底盘），不能和 17 维的人类示范放进同一个 spec。
+
 ## 可选：看某个试次
 
 只在需要解释失败原因时用。截图表，每 2 秒一格，或在某个时间窗口内每 1/3 秒一格：

@@ -21,21 +21,25 @@ K_IQR = 1.5
 KEYS = ["duration_s", "median_jerk", "p95_jerk", "max_velocity", "static_fraction", "max_pause_s"]
 
 
-def load_actions(root: Path) -> tuple[dict[int, np.ndarray], int]:
+def load_actions(root: Path) -> tuple[dict[int, tuple[np.ndarray, np.ndarray]], int]:
+    """Per episode (action, observation.state), arm dims only."""
     fps = json.loads((root / "meta/info.json").read_text())["fps"]
     df = pd.concat(
-        pd.read_parquet(p, columns=["episode_index", "frame_index", "action"])
+        pd.read_parquet(p, columns=["episode_index", "frame_index", "action", "observation.state"])
         for p in sorted((root / "data").glob("*/*.parquet"))
     ).sort_values(["episode_index", "frame_index"])
-    eps = {int(ep): np.stack(g["action"].values).astype(np.float64)[:, ARM_DIMS]
+    eps = {int(ep): tuple(np.stack(g[k].values).astype(np.float64)[:, ARM_DIMS] for k in ("action", "observation.state"))
            for ep, g in df.groupby("episode_index")}
     return eps, fps
 
 
-def episode_metrics(a: np.ndarray, fps: int) -> dict:
-    v = np.linalg.norm(np.diff(a, axis=0), axis=1) * fps
-    j = np.linalg.norm(np.diff(a, n=3, axis=0), axis=1) * fps**3
-    static = v < STATIC_SPEED
+def episode_metrics(a: np.ndarray, fps: int, s: np.ndarray | None = None) -> dict:
+    """a = command (leader arm), s = follower joints. Jerk and peak velocity are the follower's (what the robot
+    actually does, and what the policy sees) since 2026-10-23; pauses and the final pose stay on the command."""
+    s = a if s is None else s
+    v = np.linalg.norm(np.diff(s, axis=0), axis=1) * fps
+    j = np.linalg.norm(np.diff(s, n=3, axis=0), axis=1) * fps**3
+    static = np.linalg.norm(np.diff(a, axis=0), axis=1) * fps < STATIC_SPEED
     runs = np.diff(np.flatnonzero(np.diff(np.r_[0, static.astype(int), 0])))[::2]  # static run lengths
     return {
         "duration_s": len(a) / fps,
@@ -67,7 +71,7 @@ def flag_outliers(m: dict[int, dict]) -> dict[int, list[str]]:
 
 def report(root: Path) -> dict:
     eps, fps = load_actions(root)
-    m = {e: episode_metrics(a, fps) for e, a in eps.items()}
+    m = {e: episode_metrics(a, fps, s) for e, (a, s) in eps.items()}
     flags = flag_outliers(m)
     print(f"\n=== {root.name}  ({len(m)} eps, {fps} fps) ===")
     print(f"{'ep':>3} {'dur':>6} {'medJerk':>9} {'p95Jerk':>9} {'maxVel':>7} {'static':>7} {'maxPause':>8}  flags")

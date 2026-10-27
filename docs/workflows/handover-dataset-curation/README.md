@@ -11,6 +11,15 @@ the laptop has rebooted mid-build before. Existing specs: `handover_perfect.json
 
 Trim rule (the user's): cut only the idle head and tail, keep pauses inside episodes. Task start is judged by
 the arm command leaving the start pose by > 2 deg, ignoring the frame 0-1 recording jitter and head servos.
+Since 2026-10-25 (v6 trim, the user's rule): head = first leader-arm input (the 2 deg rule above, no `--to_target`);
+tail = reset basically done (`--reset_tol 10`: afterwards every joint stays within 10 of the final pose), so the operator's
+fine-tuning with the leader arm after the reset is cut — the model had learned it as jitter. Mid-episode pauses and snaps are
+not changed, only marked on the review page (`review_page.py`).
+Since 2026-10-23 (v6 on, `--to_target`): the start moves on to where the arm really heads for the tape. Target = the
+grasping arm's command at the first grasp; progress = how much of the way from the start pose to the target its 5 joints
+have covered; keep from the last frame with progress <= 5%. Jitter or wandering near the start pose is cut.
+Mid-episode pauses over 1 s: cut only the part where joints, all three cameras and the command are still (spec `cut`),
+so the join does not jump.
 
 Audit before building, per episode (raw data + `keep_range`):
 - final placement: head-camera yellow pixels at the last frame (0 = not on the visible table, e.g. put in the
@@ -32,6 +41,7 @@ Standard adapted from [huggingface/lerobot#3760](https://github.com/huggingface/
 `action` column, fast). Per episode, on the 12 arm dims only:
 - `median_jerk`, `p95_jerk` — true 3rd difference × fps³ (how shaky the motion is)
 - `max_velocity` — peak 1st difference × fps
+- Since 2026-10-23 jerk and peak velocity use the **follower joints** (`observation.state`: what the robot actually does and what the policy sees); pauses and the final pose still use the leader command.
 - `static_fraction` — share of frames with arm speed < 3 units/s; `max_pause_s` — longest still stretch
 - `duration_s`, `final_dist` — final pose distance from the dataset mean
 

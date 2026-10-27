@@ -36,7 +36,7 @@ def score(st, ac):
                     stg[2] = 1
                     if be - a_end >= MIN and st[a_end:be, GR[A]].max() > OPEN:
                         stg[3] = 1
-                        if st[be:, GR[B]].max() > OPEN: stg[4] = 1; tdone = be
+                        if be < len(st) and st[be:, GR[B]].max() > OPEN: stg[4] = 1; tdone = be  # still holding at the end = not placed
     # quality
     sp = np.abs(np.diff(st[:, list(range(5)) + list(range(6, 11))], axis=0)).max(1) * FPS  # deg/s
     move = sp > 5

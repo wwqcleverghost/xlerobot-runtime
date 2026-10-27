@@ -55,6 +55,26 @@ Stage and success rates: Wilson 95% CI. Completion, quality and total: bootstrap
 percentiles). 10 trials cannot separate 7/10 from 4/10 (Fisher p ≈ 0.37); say so when intervals overlap, and prefer
 more trials of the top models over finer scoring.
 
+## Optional: pick eval trials as training data (very strict, added with the user's OK on 2026-10-23)
+
+Keep only successful trials that are no worse than the human demos on every measure; all must hold:
+1. human label success and all 5 auto stages pass;
+2. no regrasp: at most 2 gripper closes per arm (not the hold count: one grasp often splits into two holds, in the
+   human demos too);
+3. all three quality sub-scores are 1: jitter and task time at or below the human median, no idle time;
+4. curation checklist: tape visible on the table in the last head frame, first holding arm follows the midline rule
+   (L x<=0.49, R x>=0.51).
+
+Tape standing at the start cannot be told reliably from one frame: look at the kept trials with `sheets.py`.
+
+```bash
+PYTHONPATH=src:docs/workflows/eval-scoring:docs/workflows/handover-dataset-curation:examples/xlerobot \
+  python docs/workflows/eval-scoring/select_strict.py <out_prefix> <human_ref_demo_dir> <eval_dir> ...
+```
+Writes `<out_prefix>.csv` (pass/fail of every check per trial) and `<out_prefix>_spec.json` (for
+`trim_stagnant_frames.py --spec`). Eval data is 12-dim (no head servos, no base), so it cannot share one spec with the
+17-dim human demos.
+
 ## Optional: look at a trial
 
 Only when asked to explain a failure. Contact sheets, one cell every 2 s, or every 1/3 s for a window:

@@ -2,7 +2,8 @@
 "T1 OK  arm L  tape x .39" (green OK / red FAIL from success.csv), the timer bottom right; a finished episode
 freezes on its last frame and says "end".
 
-usage: python make_grid.py <eval_dataset_dir> <out.mp4>
+usage: python make_grid.py <eval_dataset_dir> <out.mp4> [<first_episode>]
+A dataset without success.csv (demos) gets a white "ep <n>" banner; <first_episode> picks 10 episodes from there.
 """
 import sys
 from pathlib import Path
@@ -60,19 +61,24 @@ def tape_x(img):
     return np.nonzero(m)[1].mean() / m.shape[1] if m.sum() > 50 else float("nan")
 
 
-def main(root, out):
+def main(root, out, start=0):
     eps = pd.concat(map(pd.read_parquet, sorted((root / "meta/episodes").rglob("*.parquet")))).sort_values("episode_index")
+    eps = eps.iloc[start:start + 10]
     data = pd.concat(map(pd.read_parquet, sorted((root / "data").rglob("*.parquet"))))
-    succ = pd.read_csv(root / "success.csv").set_index("episode")["success"]
+    csv = root / "success.csv"
+    succ = pd.read_csv(csv).set_index("episode")["success"] if csv.exists() else None
     streams, labels = [], []
     for i, (_, ep) in enumerate(eps.iterrows()):
         gens = [episode_frames(root, c, ep) for c in CAMS]
         first = [next(g) for g in gens]
         streams.append((gens, first))
         a = np.stack(data[data.episode_index == ep.episode_index]["action"].to_numpy())
-        ok = bool(succ.get(int(ep.episode_index), 0))
         x = tape_x(first[0])
         xs = "?" if np.isnan(x) else f"{x:.2f}".lstrip("0")
+        if succ is None:
+            labels.append((f"ep {int(ep.episode_index)}  arm {first_arm(a)}  tape x {xs}", (255, 255, 255)))
+            continue
+        ok = bool(succ.get(int(ep.episode_index), 0))
         labels.append((f"T{i + 1} {'OK' if ok else 'FAIL'}  arm {first_arm(a)}  tape x {xs}", GREEN if ok else RED))
     oc = av.open(str(out), "w")
     vs = oc.add_stream("libx264", rate=FPS)
@@ -101,4 +107,4 @@ def main(root, out):
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]))
+    main(Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]) if len(sys.argv) > 3 else 0)

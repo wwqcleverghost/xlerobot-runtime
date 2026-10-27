@@ -162,6 +162,20 @@ class DiffusionConfig(PreTrainedConfig):
     # actions with that same fixed staircase. Requires horizon == react_blocks * n_action_steps.
     react_blocks: int | None = None
 
+    # Feedback denoising ("Catch Me If You Can", arXiv 2609.21022): a second training phase on top of a
+    # trained FLOW policy, started from it with --policy.path. The planner, now frozen, runs once per chunk
+    # and stops one Euler step short of clean actions. A small module, the only part that trains, takes that
+    # last step for each executed action right before it runs, from the latest camera frames seen through
+    # the planner's own image encoder. Training loads the frames recorded at those actions and compares the
+    # result with the demonstration.
+    feedback: bool = False
+    # The module's frame is refreshed every `feedback_every` steps of the chunk. n_action_steps gives a
+    # control run: the module only ever sees the frame the planner saw, so it has the same capacity but no
+    # new information.
+    feedback_every: int = 1
+    # Also give the module the joint state recorded with its frame.
+    feedback_state: bool = False
+
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
@@ -209,6 +223,10 @@ class DiffusionConfig(PreTrainedConfig):
                 "Rolling denoising needs react_blocks >= 2 and horizon == react_blocks * n_action_steps. "
                 f"Got {self.react_blocks=}, {self.horizon=}, {self.n_action_steps=}"
             )
+        if self.feedback and (self.noise_scheduler_type != "FLOW" or self.react_blocks is not None):
+            raise ValueError("Feedback denoising needs noise_scheduler_type='FLOW' and no react_blocks.")
+        if not 1 <= self.feedback_every <= self.n_action_steps:
+            raise ValueError(f"Need 1 <= feedback_every <= n_action_steps. Got {self.feedback_every=}")
 
     def get_optimizer_preset(self) -> AdamConfig:
         return AdamConfig(
@@ -227,6 +245,8 @@ class DiffusionConfig(PreTrainedConfig):
     def validate_features(self) -> None:
         if len(self.image_features) == 0 and self.env_state_feature is None:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
+        if self.feedback and len(self.image_features) == 0:
+            raise ValueError("Feedback denoising looks at camera frames: the policy needs image inputs.")
 
         if self.crop_shape is not None:
             for key, image_ft in self.image_features.items():
@@ -249,7 +269,11 @@ class DiffusionConfig(PreTrainedConfig):
 
     @property
     def observation_delta_indices(self) -> list:
-        return list(range(1 - self.n_obs_steps, 1))
+        past = list(range(1 - self.n_obs_steps, 1))
+        if not self.feedback:
+            return past
+        # Feedback training also needs the frames the module sees later in the chunk.
+        return past + list(range(self.feedback_every, self.n_action_steps, self.feedback_every))
 
     @property
     def action_delta_indices(self) -> list:

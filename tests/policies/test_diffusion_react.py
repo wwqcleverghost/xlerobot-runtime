@@ -1,11 +1,12 @@
-"""Flow matching (noise_scheduler_type="FLOW") and rolling denoising (react_blocks) for the Diffusion Policy."""
+"""Flow matching (noise_scheduler_type="FLOW"), rolling denoising (react_blocks) and feedback denoising
+(feedback) for the Diffusion Policy."""
 
 import torch
 
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
-from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_STATE
+from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 K, S, A = 4, 4, 3  # blocks, actions per block, action dim
 
@@ -99,3 +100,67 @@ def test_flow_trains_and_acts():
         action = policy.select_action({OBS_STATE: torch.randn(1, 2), OBS_ENV_STATE: torch.randn(1, 2)})
         assert action.shape == (1, A) and action.abs().max() <= 1
     assert len(chunks) == 2  # a fresh 10-step sample every n_action_steps
+
+
+def make_feedback_policy(**overrides) -> DiffusionPolicy:
+    kwargs = {"horizon": 16, "n_action_steps": 8, "feedback": True, "clip_sample": False, **overrides}
+    config = DiffusionConfig(noise_scheduler_type="FLOW", down_dims=(16, 32), crop_shape=None, **kwargs)
+    config.input_features = {
+        OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(2,)),
+        **{f"{OBS_IMAGES}.{cam}": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 64, 64)) for cam in "ab"},
+    }
+    config.output_features = {ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(A,))}
+    return DiffusionPolicy(config)
+
+
+def frame(t: int) -> dict:
+    """Observation of step t, different for every t."""
+    return {
+        OBS_STATE: torch.full((1, 2), t / 10),
+        f"{OBS_IMAGES}.a": torch.full((1, 3, 64, 64), t / 20),
+        f"{OBS_IMAGES}.b": torch.full((1, 3, 64, 64), 1 - t / 20),
+    }
+
+
+def test_feedback_starts_as_the_planner():
+    torch.manual_seed(0)
+    policy = make_feedback_policy().eval()
+    planner = make_feedback_policy(feedback=False).eval()
+    planner.load_state_dict(policy.state_dict(), strict=False)
+    plans = []
+    plan = policy.diffusion.feedback_plan
+    policy.diffusion.feedback_plan = lambda *a, **k: plans.append(1) or plan(*a, **k)
+    noise = torch.randn(1, 16, A)
+    for t in range(16):
+        expected = planner.select_action(frame(t), noise=noise)
+        torch.testing.assert_close(policy.select_action(frame(t), noise=noise), expected)
+    assert len(plans) == 2  # the planner runs once per chunk of n_action_steps
+
+
+def test_feedback_trains_only_its_module_on_the_frames_it_sees_at_inference():
+    policy = make_feedback_policy(feedback_every=3, feedback_state=True)
+    steps = policy.config.observation_delta_indices
+    assert steps == [-1, 0, 3, 6]  # the planner's two frames, then every 3rd step of the 8 executed
+    seen = []
+    module = policy.diffusion.feedback
+    forward = module.forward
+    module.forward = lambda feats, maps, state: seen.append((maps, state)) or forward(feats, maps, state)
+
+    frames = [frame(t) for t in steps]
+    batch = {k: torch.stack([f[k] for f in frames], dim=1) for k in frames[0]}
+    batch[ACTION] = torch.rand(1, 16, A) * 2 - 1
+    batch["action_is_pad"] = torch.zeros(1, 16, dtype=torch.bool)
+    policy.train()
+    assert policy.diffusion.feedback.training and not policy.diffusion.rgb_encoder.training
+    loss, _ = policy.forward(batch)
+    loss.backward()
+    trained = {n for n, p in policy.named_parameters() if p.grad is not None}
+    assert trained == {n for n, _ in policy.diffusion.feedback.named_parameters(prefix="diffusion.feedback")}
+
+    policy.eval()
+    for t in range(8):
+        policy.select_action(frame(t))
+    (train_maps, train_state), *steps_seen = seen
+    for j, (maps, state) in enumerate(steps_seen):  # step j uses the frame of step j - j % 3 in both
+        torch.testing.assert_close(maps[0], train_maps[j])
+        torch.testing.assert_close(state[0], train_state[j])

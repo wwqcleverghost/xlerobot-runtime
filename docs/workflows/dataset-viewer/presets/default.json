@@ -1,0 +1,43 @@
+{
+ "snap": {
+  "on": true,
+  "min": 1
+ },
+ "pause": {
+  "on": true,
+  "s": 1.0
+ },
+ "rev": {
+  "on": true,
+  "x": 2.0,
+  "ref": "v4-handover2-trimmed"
+ },
+ "jerk": {
+  "on": true,
+  "x": 2.0,
+  "ref": "v4-handover2-trimmed"
+ },
+ "small_snap": {
+  "on": false,
+  "min": 15
+ },
+ "stall": {
+  "on": false,
+  "min": 8
+ },
+ "place": {
+  "on": false,
+  "px": 500
+ },
+ "regrasp": {
+  "on": false,
+  "n": 2
+ },
+ "midline": {
+  "on": false
+ },
+ "standing": {
+  "on": false,
+  "r": 1.2
+ }
+}
