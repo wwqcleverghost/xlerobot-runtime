@@ -313,6 +313,22 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(teleop.left_arm.bus.limits[-1], 1000)
         self.assertFalse(teleop.left_arm.bus.torque or teleop.right_arm.bus.torque)
 
+    def test_reset_arms_moves_gripper_half_open_at_double_speed_with_the_arm(self):
+        g, j = "left_arm_gripper.pos", "left_arm_elbow_flex.pos"
+        sent = []
+        robot = SimpleNamespace(get_observation=lambda: {g: 10.0, j: 0.0}, action_features={"x.vel": float},
+                                send_action=sent.append)
+        with patch.object(evaluation.time, "sleep"):
+            evaluation.reset_arms(robot, {g: 20.0, j: 120.0}, 30, 40.0)
+        # Arm: 120 units at 40/s = 3 s; gripper: 40 + 30 units at 80/s < 1 s, both start on the first frame.
+        self.assertEqual(len(sent), 3 * 30 + 1)
+        self.assertGreater(sent[1][g], 10.0)
+        self.assertGreater(sent[1][j], 0.0)
+        self.assertAlmostEqual(max(a[g] for a in sent), 50.0, delta=0.5)
+        done = next(i for i, a in enumerate(sent) if a[g] == 20.0)
+        self.assertLess(done, 30)
+        self.assertEqual(sent[-1], {g: 20.0, j: 120.0, "x.vel": 0.0})
+
 
 if __name__ == "__main__":
     unittest.main()

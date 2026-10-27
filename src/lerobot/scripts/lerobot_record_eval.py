@@ -647,15 +647,33 @@ def dataset_start_pose(repo_id: str) -> dict[str, float]:
     return {n: float(v) for n, v in zip(names, median) if n.endswith(".pos")}
 
 
-def reset_arms(robot, target: dict[str, float], fps: int, speed: float) -> None:
-    """Cosine-eased joint move from the current pose to `target`; base held still."""
+def _ease_path(path: list[float], durations: list[float], t: float) -> float:
+    """Position at time `t` along cosine-eased segments between `path` waypoints."""
+    for a, b, d in zip(path, path[1:], durations):
+        if t < d:
+            return a + (0.5 - 0.5 * math.cos(math.pi * t / d)) * (b - a)
+        t -= d
+    return path[-1]
+
+
+def reset_arms(
+    robot, target: dict[str, float], fps: int, speed: float, gripper_open: float = 50.0, gripper_gain: float = 2.0
+) -> None:
+    """Cosine-eased joint move from the current pose to `target`, all joints at once; base held still.
+    Arm joints arrive together (at least 2 s). Grippers run at `gripper_gain` x `speed`, opening to
+    `gripper_open` (RANGE_0_100: 100 = open) and then closing to their rest value."""
     obs = robot.get_observation()
     start = {k: float(obs[k]) for k in target}
     base = {k: 0.0 for k in BASE_STOP if k in robot.action_features}
-    n = int(max(2.0, max(abs(target[k] - start[k]) for k in target) / speed) * fps)
+    arm = [k for k in target if "gripper" not in k]
+    arm_s = max([2.0] + [abs(target[k] - start[k]) / speed for k in arm])
+    paths = {k: ([start[k], target[k]], [arm_s]) for k in arm}
+    for k in target.keys() - set(arm):
+        path = [start[k], gripper_open, target[k]]
+        paths[k] = (path, [abs(b - a) / (gripper_gain * speed) for a, b in zip(path, path[1:])])
+    n = int(max(sum(d) for _, d in paths.values()) * fps)
     for i in range(n + 1):
-        a = 0.5 - 0.5 * math.cos(math.pi * i / n)
-        robot.send_action({**{k: start[k] + a * (target[k] - start[k]) for k in target}, **base})
+        robot.send_action({**{k: _ease_path(p, d, i / fps) for k, (p, d) in paths.items()}, **base})
         time.sleep(1 / fps)
 
 
@@ -849,9 +867,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     kw = {"speed": cfg.reset_speed, "show": False}
                     leader = threading.Thread(target=align_leader, args=(teleop, reset_pose, cfg.dataset.fps), kwargs=kw)
                     leader.start()
-                # Open the grippers fully on the way (RANGE_0_100: 100 = open), then close to the rest value.
-                opened = {k: 100.0 if "gripper" in k else v for k, v in reset_pose.items()}
-                reset_arms(robot, opened, cfg.dataset.fps, cfg.reset_speed)
                 reset_arms(robot, reset_pose, cfg.dataset.fps, cfg.reset_speed)
                 if leader is not None:
                     leader.join()
