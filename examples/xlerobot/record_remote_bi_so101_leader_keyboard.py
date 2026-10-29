@@ -290,7 +290,7 @@ def record_loop(
 
 def main():
     parser = argparse.ArgumentParser(description="Record datasets for XLerobot using bi-so101 leader + keyboard")
-    parser.add_argument("--robot_id", type=str, default="joyandai_xlerobot", help="Robot ID")
+    parser.add_argument("--robot_id", type=str, default="xlr26009", help="Robot ID")
     parser.add_argument("--remote_ip", type=str, default="192.168.0.243", help="Remote robot IP address")
     parser.add_argument("--leader_id", type=str, default="my_bi_so101_leader", help="Bi leader ID")
     parser.add_argument("--left_leader_port", type=str, default="/dev/so101_leader_left", help="Left leader serial port")
@@ -345,8 +345,14 @@ def main():
 
     # Build the dataset schema from the robot hardware specs so frames can be packed
     # into the standard LeRobot observation/action format.
-    action_features = hw_to_dataset_features(robot.action_features, "action")
-    obs_features = hw_to_dataset_features(robot.observation_features, "observation")
+    # Record only the 12 arm joints (no head, no base); cameras are kept.
+    def is_arm_or_camera(key: str) -> bool:
+        return key.startswith(("left_arm_", "right_arm_")) or not key.endswith((".pos", ".vel"))
+
+    arm_action_ft = {k: v for k, v in robot.action_features.items() if is_arm_or_camera(k)}
+    arm_obs_ft = {k: v for k, v in robot.observation_features.items() if is_arm_or_camera(k)}
+    action_features = hw_to_dataset_features(arm_action_ft, "action")
+    obs_features = hw_to_dataset_features(arm_obs_ft, "observation")
     dataset_features = {**action_features, **obs_features}
 
     robot.connect()

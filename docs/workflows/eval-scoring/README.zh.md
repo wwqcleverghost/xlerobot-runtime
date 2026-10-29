@@ -75,3 +75,10 @@ PYTHONPATH=src:docs/workflows/eval-scoring:docs/workflows/handover-dataset-curat
 
 历史：2026-10-23 之前每个试次打 0–5 分，第一个失败阶段之后全部记 0，平滑度单独报告。
 那时的分数在 HF `wwqcleverghost/eval-scores-v4-v5`。
+
+## 可选：逐帧阶段标签
+
+`score.stage_frames(state, action)` 给每帧一个标签：0 前往，1 A 臂抓着，2 两手同时抓，3 B 臂抓着，4 已放下（B 抓完后张开）。
+分界点来自和完成度阶段相同的抓住段；没完成交接的试次从最后到达的阶段一直保持到结尾。2026-10-29 在 v4-handover2-trimmed 上检查：
+标签从不倒退，"到达 4" 与 `score()` 的放置阶段 50/50 个试次一致（v6-flow_h16_s8 评测上也是 50/50）。
+还没写进任何数据集；标签用途待定。

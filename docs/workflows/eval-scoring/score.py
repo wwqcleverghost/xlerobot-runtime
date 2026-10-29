@@ -14,9 +14,37 @@ def runs(mask):
             s = None
     return out
 
+def locate(run):
+    """(data dir, success.csv path or None). Some eval uploads nest the dataset in dataset/; others (v6) keep data at
+    the top and put only success.csv in an otherwise empty dataset/."""
+    import os
+    base = f'{run}/dataset' if os.path.isdir(f'{run}/dataset/data') else run
+    csv = next((c for c in (f'{base}/success.csv', f'{run}/success.csv', f'{run}/dataset/success.csv') if os.path.exists(c)), None)
+    return base, csv
+
+def holds(st, ac):
+    """{'L'/'R': [(start, end)]} hold runs per arm."""
+    return {k: runs((ac[:, g] < st[:, g] - GAP) & (st[:, g] > 4)) for k, g in GR.items()}
+
+def stage_frames(st, ac):
+    """Per-frame stage label: 0 reaching, 1 A holds, 2 both hold, 3 B holds, 4 placed (B opened after its hold).
+    Boundaries come from the same hold pairs score() uses; first pair that completes the place wins, else first
+    handover pair (stays 3 to the end). No hold pair: 0 before the first hold, 1 after."""
+    hr, lab = holds(st, ac), np.zeros(len(st), np.int64)
+    first = min((s for v in hr.values() for s, _ in v), default=None)
+    if first is None: return lab
+    lab[first:] = 1
+    pairs = [(bs, a_end, be, B) for A, B in (('L', 'R'), ('R', 'L')) for _, a_end in hr[A]
+             for bs, be in hr[B] if be > a_end and bs < a_end + 5]
+    done = [p for p in pairs if p[2] - p[1] >= MIN and p[2] < len(st) and st[p[2]:, GR[p[3]]].max() > OPEN]
+    if not (done or pairs): return lab
+    bs, a_end, be, _ = min(done or pairs, key=lambda p: p[1])
+    lab[min(bs, a_end):a_end] = 2; lab[a_end:] = 3
+    if done: lab[be:] = 4
+    return lab
+
 def score(st, ac):
-    hold = {k: (ac[:, g] < st[:, g] - GAP) & (st[:, g] > 4) for k, g in GR.items()}
-    hr = {k: runs(v) for k, v in hold.items()}
+    hr = holds(st, ac)
     moved = {k: np.abs(st[:, a] - st[0, a]).max() > 30 for k, a in ARM.items()}
     opened = {k: (st[:, g] > OPEN).any() for k, g in GR.items()}
     stg = [0] * 5; tdone = None
@@ -58,9 +86,9 @@ def score(st, ac):
 
 if __name__ == '__main__':
     for run in sys.argv[1:]:
-        run = run.rstrip('/'); base = f'{run}/dataset' if __import__('os').path.isdir(f'{run}/dataset') else run
-        d = pd.read_parquet(f'{base}/data/chunk-000/file-000.parquet')
-        lab = pd.read_csv(f'{base}/success.csv').success.values
+        run = run.rstrip('/'); base, csv = locate(run)
+        d = pd.concat(pd.read_parquet(f) for f in sorted(__import__('glob').glob(f'{base}/data/*/*.parquet')))
+        lab = pd.read_csv(csv).success.values
         rows = []
         for ep, g in d.groupby('episode_index'):
             r = score(np.stack(g['observation.state'].values), np.stack(g['action'].values))

@@ -69,6 +69,11 @@ def scan():
     return out
 
 
+def is_eval(root):
+    """An eval run: has success.csv. Runs with human takeovers (interventions.csv) are DAgger data, listed with the training sets."""
+    return (root / "success.csv").exists() and not (root / "interventions.csv").exists()
+
+
 def root_of(ds_id):
     p = Path(ds_id) if os.path.isabs(ds_id) else OWNER / ds_id
     p = p / "dataset" if (p / "dataset/meta/info.json").exists() else p
@@ -119,11 +124,14 @@ def build_record(ds_id):
 def ds_list():
     busy, out = building(), []
     for d in scan():
+        is_busy = d["id"].split("/")[0] in busy
+        if not is_busy and not glob.glob(str(d["root"] / "data/*/*.parquet")):
+            continue  # meta only (e.g. an eval run that recorded nothing): nothing to show
         info = json.load(open(d["root"] / "meta/info.json"))
         rec = build_record(d["id"])
         out.append(dict(id=d["id"], episodes=info["total_episodes"], frames=info["total_frames"], fps=info["fps"],
-                        dims=info["features"]["action"]["shape"][0], eval=(d["root"] / "success.csv").exists(),
-                        revision=revision(d["root"]), building=d["id"].split("/")[0] in busy,
+                        dims=info["features"]["action"]["shape"][0], eval=is_eval(d["root"]), dagger=(d["root"] / "interventions.csv").exists(),
+                        revision=revision(d["root"]), building=is_busy,
                         built=rec and dict(git=rec["git"], started=rec["started"], spec=rec["spec"])))
     return out
 
@@ -132,7 +140,9 @@ def load(ds_id):
     """Arrays of one dataset, cached until its data files change."""
     root = root_of(ds_id)
     files = sorted(glob.glob(str(root / "data/*/*.parquet")))
-    key = tuple((f, os.path.getmtime(f)) for f in files) + (os.path.getmtime(root / "meta/info.json"),)
+    csv = root / "success.csv"  # relabeling a trial must reload the labels too
+    key = tuple((f, os.path.getmtime(f)) for f in files) + (os.path.getmtime(root / "meta/info.json"),
+                                                            os.path.getmtime(csv) if csv.exists() else 0)
     with lock:
         if ds_id in _cache and _cache[ds_id]["key"] == key:
             return _cache[ds_id]
@@ -265,6 +275,12 @@ def spec_list():
     return out
 
 
+def label_drop(lab):
+    """An episode the user dropped in the labels: forced drop, or a manual start / end mark (standing / basket) not forced kept.
+    Shared by the trim review (its "drop" button) and the curate rules, so both pages show the same decision."""
+    return lab.get("force") == "drop" or (lab.get("manual") in curate.MANUAL and lab.get("force") != "keep")
+
+
 def rule_eps(o, source, reset_tol, to_target, snap_rule):
     """The rule's cut for every episode of one source (what review_page.py shows)."""
     start_s = {int(k): v for k, v in source.get("start_s", {}).items()}
@@ -282,26 +298,55 @@ def rule_eps(o, source, reset_tol, to_target, snap_rule):
     return out
 
 
+def range_q(a, s, f, e):
+    """report.py quality of the kept frames [f, e) vs the human demos: [q, smooth, speed, idle]. Speed is NaN (not
+    counted) where the kept part is not a whole task, e.g. a takeover segment."""
+    q, sub = report.quality(pd.DataFrame([report.trial(s[f:e], a[f:e])]), ref())
+    return [float(q[0]), *map(float, sub.iloc[0][["smooth", "speed", "idle"]])]
+
+
+def seg_cards(name, source, labels):
+    """One card per segment of a segment source (takeover corrections); the "rule" range is the segment as first
+    written (spec_orig), labels are keyed "<ep>.<segment>"."""
+    ds_id, orig = ds_id_of(source), OUT / "spec_orig" / name
+    o = load(ds_id)
+    first = next(s for s in json.load(open(orig)) if ds_id_of(s) == ds_id) if orig.exists() else source
+    out = []
+    for k, segs in source["segments"].items():
+        a, s = ep_arrays(o, int(k))
+        for i, (f, e) in enumerate(first["segments"][k]):
+            cur = segs[i]
+            out.append(dict(ep=int(k), seg=i, n=len(a), first=f, end=e, pfirst=f, pend=e, pdrop=False, snaps=snaps(a, s, 0, len(a)),
+                            pauses=pauses(a, *cur), arm=first_arm(a), q=range_q(a, s, *cur), ds=ds_id, repo=source["repo"], video=videos(ds_id, o, int(k)),
+                            label=labels.get(ds_id, {}).get(f"{k}.{i}", {}),
+                            edit=dict(range=cur, cut=[], drop=i in source.get("drop_seg", {}).get(k, []))))
+    return out
+
+
 def review(name, reset_tol, to_target, snap_rule):
     spec, labels, out = json.load(open(spec_path(name))), read_json(LABELS, {}), []
     for source in spec:
         if "segments" in source:
-            continue  # segment specs (takeover corrections) are not trims
+            out += seg_cards(name, source, labels)
+            continue
         ds_id = ds_id_of(source)
         o = load(ds_id)
         rng, cut, drop = source.get("range", {}), source.get("cut", {}), set(source.get("drop", []))
         for r in rule_eps(o, source, reset_tol, to_target, snap_rule):
             k = str(r["ep"])
-            r.update(ds=ds_id, repo=source["repo"], video=videos(ds_id, o, r["ep"]), label=labels.get(ds_id, {}).get(k, {}),
-                     edit=dict(range=rng.get(k), cut=cut.get(k, []), drop=r["ep"] in drop))
+            lab = labels.get(ds_id, {}).get(k, {})
+            a, s = ep_arrays(o, r["ep"])
+            r.update(ds=ds_id, repo=source["repo"], video=videos(ds_id, o, r["ep"]), label=lab,
+                     q=range_q(a, s, *(rng.get(k) or (r["pfirst"], r["pend"]))),
+                     edit=dict(range=rng.get(k), cut=cut.get(k, []), drop=r["ep"] in drop or label_drop(lab)))
             out.append(r)
-    return dict(spec=name, fps=30, episodes=out, sources=[dict(repo=s["repo"], ds=ds_id_of(s), dst=s.get("dst", ""))
-                                                            for s in spec if "segments" not in s],
+    return dict(spec=name, fps=30, episodes=out, sources=[dict(repo=s["repo"], ds=ds_id_of(s), dst=s.get("dst", "")) for s in spec],
                 rule=next((s["rule"] for s in spec if "rule" in s), None))
 
 
-def edit_spec(name, repo, ep, edit):
-    """edit = {a, b, cuts, drop} writes this episode's exact range; edit = None resets it to the original spec."""
+def edit_spec(name, ds, ep, edit, seg=None):
+    """edit = {a, b, cuts, drop} writes this episode's exact range; edit = None resets it to the original spec.
+    seg = index of the segment in a segment source: its [a, b] goes into "segments", drop into "drop_seg"."""
     p, k = spec_path(name), str(ep)
     with lock:
         spec = json.load(open(p))
@@ -309,9 +354,27 @@ def edit_spec(name, repo, ep, edit):
         if not orig.exists():  # first write ever: keep the hand-written version for "reset"
             orig.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(p, orig)
-        src = next(s for s in spec if s["repo"] == repo)
+        src = next(s for s in spec if ds_id_of(s) == ds)  # not by repo: set1 / set2 of one eval share it
+        if seg is not None:
+            if edit is None:
+                o = next(s for s in json.load(open(orig)) if ds_id_of(s) == ds)
+                (a, b), drop = o["segments"][k][seg], seg in o.get("drop_seg", {}).get(k, [])
+            else:
+                a, b, drop = int(edit["a"]), int(edit["b"]), bool(edit["drop"])
+            assert 0 <= a < b, (a, b)
+            src["segments"][k][seg] = [a, b]
+            sd = src.setdefault("drop_seg", {})
+            d = set(sd.get(k, [])) - {seg} | ({seg} if drop else set())
+            if d:
+                sd[k] = sorted(d)
+            else:
+                sd.pop(k, None)
+            if not sd:
+                del src["drop_seg"]
+            write_json(p, spec, spec=True)
+            return dict(range=[a, b], cut=[], drop=drop)
         if edit is None:
-            o = next((s for s in json.load(open(orig)) if s["repo"] == repo), {})
+            o = next((s for s in json.load(open(orig)) if ds_id_of(s) == ds), {})
             edit = dict(range=o.get("range", {}).get(k), cuts=o.get("cut", {}).get(k, []), drop=ep in o.get("drop", []))
         else:
             assert 0 <= edit["a"] < edit["b"], edit
@@ -325,6 +388,12 @@ def edit_spec(name, repo, ep, edit):
                 d.pop(k, None)
             if not d:
                 del src[key]
+        # the drop decision lives in the labels too (shared with the curate rules on the quality page)
+        lab = read_json(LABELS, {}).get(ds_id_of(src), {}).get(k, {})
+        if edit["drop"] and not label_drop(lab):
+            set_label(ds_id_of(src), ep, {"force": "drop"})
+        elif not edit["drop"] and label_drop(lab):
+            set_label(ds_id_of(src), ep, {"force": "", "manual": "" if lab.get("manual") in curate.MANUAL else lab.get("manual")})
         drop = set(src.get("drop", [])) - {ep} | ({ep} if edit["drop"] else set())
         if drop:
             src["drop"] = sorted(drop)
@@ -354,6 +423,8 @@ def freeze(name, rule):
                 continue
             o = load(ds_id_of(source))
             rng, drop = source.setdefault("range", {}), set(source.get("drop", []))
+            labels = read_json(LABELS, {}).get(ds_id_of(source), {})
+            drop |= {int(e) for e, lab in labels.items() if label_drop(lab)}
             for r in rule_eps(o, source, rule["reset_tol"], rule["to_target"], rule["snap_rule"]):
                 k = str(r["ep"])
                 if k not in rng:
@@ -493,26 +564,26 @@ def _evaluation(ds_id):
 
 # Scores are cached on disk (outputs/dataset_viewer/cache/scores) until the dataset's files or a scoring script change,
 # so the history tables open at once; a background thread fills in what is missing.
-CODE = [REPO / f for f in ("docs/workflows/dataset-viewer/curate.py", "docs/workflows/handover-dataset-curation/review_page.py",
-                           "docs/workflows/handover-dataset-curation/ep_score.py",
-                           "docs/workflows/eval-scoring/report.py", "docs/workflows/eval-scoring/score.py",
+CODE = [REPO / f for f in ("docs/workflows/eval-scoring/report.py", "docs/workflows/eval-scoring/score.py",
                            "docs/workflows/eval-scoring/smooth.py", "src/lerobot/scripts/lerobot_dataset_quality.py")]
+CURATE_CODE = CODE + [REPO / f for f in ("docs/workflows/dataset-viewer/curate.py", "docs/workflows/handover-dataset-curation/review_page.py",
+                                          "docs/workflows/handover-dataset-curation/ep_score.py")]
 SCORE_VERSION = 1  # bump when _quality / _evaluation change what they return
 score_lock = threading.Lock()  # report.rng is global: one scoring at a time
 _failed = {}
 
 
-def score_key(ds_id):
+def score_key(ds_id, kind="quality"):
     root = root_of(ds_id)
     files = sorted(glob.glob(str(root / "data/*/*.parquet"))) + [str(root / "meta/info.json"), str(root / "success.csv"),
                                                                   str(root_of(REF) / "meta/info.json")]
-    stamp = [(f, os.path.getmtime(f) if os.path.exists(f) else 0) for f in files] + [os.path.getmtime(f) for f in CODE] + [SCORE_VERSION]
+    stamp = [(f, os.path.getmtime(f) if os.path.exists(f) else 0) for f in files] + [os.path.getmtime(f) for f in (CURATE_CODE if kind == "curate" else CODE)] + [SCORE_VERSION]
     return hashlib.md5(repr(stamp).encode()).hexdigest()
 
 
 def cached(kind, ds_id, compute=True):
     path = OUT / "cache/scores" / f"{ds_id.replace('/', '__')}.{kind}.json"
-    key = score_key(ds_id)
+    key = score_key(ds_id, kind)
     try:
         c = json.load(open(path))
         if c["key"] == key:
@@ -609,11 +680,10 @@ def history(kind):
     """Summary row of every dataset of this kind (training/demo or eval); missing ones are computed in the background."""
     busy, rows, pending = building(), [], []
     for d in scan():
-        is_eval = (d["root"] / "success.csv").exists()
-        if is_eval != (kind == "eval") or d["id"].split("/")[0] in busy:
+        if is_eval(d["root"]) != (kind == "eval") or d["id"].split("/")[0] in busy:
             continue
         err = _failed.get((kind, d["id"]))
-        if err and err[0] == score_key(d["id"]):  # retried once the data or a scoring script changes
+        if err and err[0] == score_key(d["id"], kind):  # retried once the data or a scoring script changes
             rows.append(dict(id=d["id"], version=version(d["id"]), error=err[1]))
             continue
         v = cached(kind, d["id"], compute=False)
@@ -640,7 +710,7 @@ def fill():
             cached(kind, ds_id)
             _failed.pop((kind, ds_id), None)
         except Exception as e:
-            _failed[(kind, ds_id)] = (score_key(ds_id), f"{type(e).__name__}: {e}")
+            _failed[(kind, ds_id)] = (score_key(ds_id, kind), f"{type(e).__name__}: {e}")
 
 
 # ---------- http ----------
@@ -736,8 +806,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         routes = {
-            "/api/label": lambda: set_label(b["id"], int(b["ep"]), b["patch"]),
-            "/api/review/edit": lambda: edit_spec(b["spec"], b["repo"], int(b["ep"]), b.get("edit")),
+            "/api/label": lambda: set_label(b["id"], b["ep"], b["patch"]),  # ep or "<ep>.<segment>"
+            "/api/review/edit": lambda: edit_spec(b["spec"], b["ds"], int(b["ep"]), b.get("edit"), b.get("seg")),
             "/api/rebuild": lambda: rebuild(b["spec"], b["rule"], b["dsts"], b.get("overwrite", False), b.get("arm_only", False)),
             "/api/spec/new": lambda: new_spec(b["id"]),
             "/api/curate/run": lambda: curate_run(b["ids"], b["preset"]),
@@ -787,6 +857,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def selfcheck():
+    assert label_drop({"force": "drop"}) and label_drop({"manual": "basket"}) and not label_drop({"manual": "ok"})
+    assert not label_drop({"manual": "standing", "force": "keep"})
     assert jsonable({"a": float("nan"), "b": np.int64(3), "c": [np.float32(1.5)]}) == {"a": None, "b": 3, "c": [1.5]}
     # fail_time: left gripper holds the tape (command 1, state 8) frames 10-40, then drops it
     st, ac = np.zeros((100, 12)), np.zeros((100, 12))

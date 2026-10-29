@@ -2,7 +2,7 @@
 
 English: [v7_selection_2026-10-27.md](v7_selection_2026-10-27.md)
 
-`wwqcleverghost/v7-handover-clean`：53 条（handover2 38 + handover1 15），17 维，只在本地和 server1（`/media/data/wwq/data/v7-handover-clean`），未上传 HF。
+`wwqcleverghost/v7-handover-clean`：53 条（handover2 38 + handover1 15），17 维。2026-10-29 已上传 HF（私有），revision `fee2b18a`（空的 `images/` 目录没传）；server1 上也有（`/media/data/wwq/data/v7-handover-clean`）。
 spec：`examples/xlerobot/v7_handover_clean.json`；逐条结果：[v7_selection_2026-10-27.csv](v7_selection_2026-10-27.csv)（`v7` 列）。
 构建：git `d0c28aca`（工作区有未提交改动），来源 `wwqcleverghost/v2-handover2`、`wwqcleverghost/v1-handover1`（本地缓存）。
 

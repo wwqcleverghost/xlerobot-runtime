@@ -21,6 +21,17 @@
         "PYTHONPATH": "src"
       },
       "port": 8770
+    },
+    {
+      "name": "dataset-viewer-marmotlab",
+      "runtimeExecutable": "/home/marmotlab/miniconda3/envs/lerobot-wwq/bin/python",
+      "runtimeArgs": [
+        "docs/workflows/dataset-viewer/server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "src"
+      },
+      "port": 8770
     }
   ]
 }

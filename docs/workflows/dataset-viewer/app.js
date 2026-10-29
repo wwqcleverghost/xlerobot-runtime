@@ -4,7 +4,7 @@ const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [..
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 const el = html => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 const fx = (x, d = 2) => x == null ? '–' : (+x).toFixed(d);
-const FPS = 30, sec = f => (f / FPS).toFixed(2);
+const FPS = 30, sec = f => (f / FPS).toFixed(2), f2 = x => x == null ? '–' : x.toFixed(2);
 const NAMES = ['左肩转', '左肩抬', '左肘', '左腕屈', '左腕转', '左夹爪', '右肩转', '右肩抬', '右肘', '右腕屈', '右腕转', '右夹爪'];
 const TAGS = ['微调', '突变', '重抓', '放错位置', '停顿', '掉落', '卡住'];
 const REF_NAME = 'v4-handover2-trimmed';
@@ -52,7 +52,8 @@ function showInfo(ids, extra = '') {
   $('#info').textContent = (extra || (ids.length === 1 ? dsLabel(G.by[ids[0]]) : '')) + (g ? ' · ' + g : '');
 }
 // mode 'single' | 'multi' | null; filter(d) limits the list; onchange(ids)
-function picker(mode, ids, filter, onchange) {
+// onchange(ids, true): the change came from the picker itself, so the caller must not rebuild it (that would close the list)
+function picker(mode, ids, filter, onchange, max = Infinity) {
   const box = $('#picker');
   box.innerHTML = '';
   if (!mode) return;
@@ -68,10 +69,10 @@ function picker(mode, ids, filter, onchange) {
     const draw = () => {
       const s = $('input', pop).value.toLowerCase(), list = G.ds.filter(filter).filter(d => d.id.toLowerCase().includes(s));
       const row = d => `<label class="row"><input type="${mode === 'single' ? 'radio' : 'checkbox'}" name="pk" value="${esc(d.id)}" ${ids.includes(d.id) ? 'checked' : ''}>
-        <span>${esc(d.id)}</span><span class="mute">${d.episodes} 条 · ${d.dims} 维 · ${d.revision ? d.revision.slice(0, 8) : '本地'}${d.building ? ' · <b class="err">构建中</b>' : ''}</span></label>`;
+        <span>${esc(d.id)}</span><span class="mute">${d.episodes} 条 · ${d.dims} 维 · ${d.revision ? d.revision.slice(0, 8) : '本地'}${d.dagger ? ' · 人工接管（DAgger）' : ''}${d.building ? ' · <b class="err">构建中</b>' : ''}</span></label>`;
       const demo = list.filter(d => !d.eval), evl = list.filter(d => d.eval);
       $('.list', pop).innerHTML = (demo.length ? '<h4>训练 / 示范数据集</h4>' + demo.map(row).join('') : '') +
-        (evl.length ? '<h4>评测数据集（有 success.csv）</h4>' + evl.map(row).join('') : '');
+        (evl.length ? '<h4>评测数据集（有 success.csv，没有人工接管）</h4>' + evl.map(row).join('') : '');
     };
     draw();
     $('input', pop).oninput = draw;
@@ -80,8 +81,10 @@ function picker(mode, ids, filter, onchange) {
     pop.onchange = ev => {
       if (ev.target.name !== 'pk') return;
       const v = ev.target.value;
-      if (mode === 'single') { ids = [v]; pop.remove(); } else ids = ev.target.checked ? [...ids, v] : ids.filter(x => x !== v);
-      label(); onchange(ids);
+      if (mode === 'single') { ids = [v]; pop.remove(); }
+      else if (ev.target.checked && ids.length >= max) { ev.target.checked = false; return status(`最多 ${max} 个数据集，先取消一个`, 1); }
+      else ids = ev.target.checked ? [...ids, v] : ids.filter(x => x !== v);
+      label(); onchange(ids, true);
     };
   };
 }
@@ -187,7 +190,7 @@ class Curves {
     this.arm = o.arm === 'R' ? 'R' : 'L';
     this.box = box;
     box.classList.add('curves');
-    box.innerHTML = '<button class="foldsw" title="折叠 / 展开这条的关节曲线"></button><canvas></canvas><div class="ph"></div><button class="armsw" title="切换显示的手臂"></button>';
+    box.innerHTML = '<canvas></canvas><div class="ph"></div><span class="chd"><button class="armsw" title="切换显示的手臂"></button><button class="foldsw" title="折叠 / 展开这条的关节曲线"></button></span>';
     this.cv = $('canvas', box); this.ph = $('.ph', box);
     $('.armsw', box).onclick = ev => { ev.stopPropagation(); this.arm = this.arm === 'L' ? 'R' : 'L'; this.draw(); };
     $('.foldsw', box).onclick = ev => { ev.stopPropagation(); this.fold(!this.folded); };
@@ -205,7 +208,7 @@ class Curves {
   fold(v) {
     this.folded = v;
     this.box.classList.toggle('folded', v);
-    $('.foldsw', this.box).textContent = v ? '▸ 关节曲线' : '▾ 折叠';
+    $('.foldsw', this.box).textContent = (v ? '▸' : '▾') + ' 关节曲线';
     if (!v) this.draw();
   }
   draw() {
@@ -277,10 +280,14 @@ function labeler(box, id, ep, label, onchange) {
   let tm;
   $('[data-note]', box).oninput = ev => { clearTimeout(tm); tm = setTimeout(() => save({note: ev.target.value}), 500); };
 }
-const tagChips = l => (l && l.v ? `<span class="chip ${l.v}">${l.v === 'ok' ? '通过' : '有问题'}</span>` : '') + ((l && l.tags) || []).map(t => `<span class="chip">${esc(t)}</span>`).join('');
+const MANUAL_ZH = {standing: '人工：开头立着', basket: '人工：放进框里', ok: '起止画面已看'};
+const tagChips = l => (l && l.v ? `<span class="chip ${l.v}">${l.v === 'ok' ? '通过' : '有问题'}</span>` : '') +
+  (l && l.force ? `<span class="chip ${l.force === 'drop' ? 'bad' : 'ok'}">强制${l.force === 'drop' ? '去掉' : '保留'}</span>` : '') +
+  (l && l.manual ? `<span class="chip ${l.manual === 'ok' ? '' : 'bad'}">${MANUAL_ZH[l.manual] || esc(l.manual)}</span>` : '') +
+  ((l && l.tags) || []).map(t => `<span class="chip">${esc(t)}</span>`).join('');
 
 // ---------- episode modal (batch / quality / eval) ----------
-// list = [{id, ep, n, video, arm, label, fail?, title}]; J/K moves inside the list
+// list = [{id, ep, n, video, arm, label, fail?, title}]; A/D moves inside the list
 function openModal(list, k, start) {
   const dlg = $('#modal');
   let p, cv;
@@ -288,7 +295,7 @@ function openModal(list, k, start) {
     p && p.destroy(); cv && cv.destroy();
     const e = list[k];
     dlg.innerHTML = `<header style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap"><b>${esc(e.id)} ep${e.ep}</b><span>${e.title || ''}</span>
-      <span class="mute">${k + 1}/${list.length} · J/K 上下条 · 空格播放 · Esc 关闭</span><button style="margin-left:auto" class="x">关闭</button></header>
+      <span class="mute">${k + 1}/${list.length} · A/D 上下条 · 空格播放 · Esc 关闭</span><button style="margin-left:auto" class="x">关闭</button></header>
       <div class="pl"></div><div class="cv"></div><div class="labeler"></div>`;
     p = new Player($('.pl', dlg), {...e, start: start ?? e.start ?? 0});
     cv = new Curves($('.cv', dlg), {id: e.id, ep: e.ep, n: e.n, arm: e.arm, marks: e.fail != null ? {fail: e.fail} : {},
@@ -302,8 +309,8 @@ function openModal(list, k, start) {
   };
   dlg.onkeydown = ev => {
     if (ev.target.tagName === 'INPUT') return;
-    if ('jJ'.includes(ev.key)) { ev.preventDefault(); if (dlg.k < list.length - 1) show(dlg.k + 1); }
-    else if ('kK'.includes(ev.key)) { ev.preventDefault(); if (dlg.k > 0) show(dlg.k - 1); }
+    if ('dD'.includes(ev.key)) { ev.preventDefault(); if (dlg.k < list.length - 1) show(dlg.k + 1); }
+    else if ('aA'.includes(ev.key)) { ev.preventDefault(); if (dlg.k > 0) show(dlg.k - 1); }
     else if (ev.key === ' ') { ev.preventDefault(); p.toggle(); }
   };
   dlg.onclose = () => { p && p.destroy(); cv && cv.destroy(); dlg.innerHTML = ''; dlg.dispatchEvent(new Event('closed')); };
@@ -320,7 +327,7 @@ async function pageReview(q, view, tools) {
   const spec = q.spec || LS.get('spec', 'v6_trim_all.json');
   const rule = {reset_tol: +(q.tol ?? 10), to_target: q.tt === '1', snap_rule: q.snap === '1'};
   tools.innerHTML = `
-    <label>spec <select id="spec">${specs.filter(s => !s.segments).map(s => `<option ${s.name === spec ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
+    <label>spec <select id="spec">${specs.map(s => `<option ${s.name === spec ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
     <button id="newspec" title="给一个数据集新建 examples/xlerobot/&lt;名字&gt;_trim.json">新建 spec…</button>
     <label title="尾部：从每个关节都保持在最终姿态这么多以内的第一帧结束（v6 = 10）">结尾容差 <input id="tol" type="number" step="1" min="1" style="width:56px" value="${rule.reset_tol}"></label>
     <label title="开头从抓取臂真正朝胶带出发处开始（reach_start）"><input type="checkbox" id="tt" ${rule.to_target ? 'checked' : ''}>--to_target</label>
@@ -331,18 +338,27 @@ async function pageReview(q, view, tools) {
     <label><input type="checkbox" id="fsnap">只看有突变</label><label><input type="checkbox" id="fpause">只看有停顿</label>
     <label><input type="checkbox" id="fedit">只看已修改</label><label><input type="checkbox" id="fdrop">隐藏整条不要</label>
     <label title="只循环播放保留的部分"><input type="checkbox" id="kloop">只播保留段</label>
+    <label title="质量分 = report.py：0.4 平顺 + 0.3 用时 + 0.3 停顿，对比人工示教，按保留范围算（接管片段不是完整任务，不算用时）；改了范围刷新后更新">排序 <select id="sort"><option value="q">质量分 高→低</option><option value="">原始顺序</option></select></label>
     <span id="count" class="mute"></span><span id="foldall"></span>
     <button id="exp">导出</button><button id="rebuild" class="on">按修改重建数据集…</button>
     <span class="legend"><span><i style="background:var(--cut)"></i>剪掉</span><span><i style="background:var(--kept)"></i>保留</span><span><i style="background:var(--snap)"></i>突变</span>
       <span><i style="background:var(--pause)"></i>停顿&gt;1秒</span><span><i style="border:1px solid var(--ink)"></i>规则范围</span>
-      <span>J/K 上下条 · 空格播放 · 在时间轴上按住拖动预览、松手接着播 · [ ] 设起点/终点 · 点剪切段或橙色把手后按 Delete 删除 · &lt; &gt; 调速度</span></span>`;
+      <span>A/D 上下条 · 空格播放 · 在时间轴上按住拖动预览、松手接着播 · [ ] 设起点/终点 · 点剪切段或橙色把手后按 Delete 删除 · &lt; &gt; 调速度</span></span>`;
   $('#foldall').replaceWith(foldAllButton());
   const go = () => setQuery({spec: $('#spec').value, tol: $('#tol').value, tt: +$('#tt').checked, snap: +$('#snap').checked});
   $('#spec').onchange = () => { LS.set('spec', $('#spec').value); go(); render(); };
   ['#tol', '#tt', '#snap'].forEach(s => $(s).onchange = () => { go(); refresh(); });
-  $('#newspec').onclick = () => {
-    const id = prompt('数据集名（~/.cache/huggingface/lerobot/wwqcleverghost/ 下的目录名）', 'handover2');
-    if (id) api('/api/spec/new', {id}).then(r => { LS.set('spec', r.name); location.hash = '#review?spec=' + r.name; location.reload(); }).catch(e => status(e.message, 1));
+  $('#newspec').onclick = () => {  // an in-page dialog: prompt() does not exist in every browser (e.g. the Claude app pane)
+    const dlg = $('#modal');
+    dlg.onkeydown = null; dlg.onclose = () => { dlg.innerHTML = ''; };
+    dlg.innerHTML = `<h3 style="margin-top:0">新建裁剪 spec</h3>
+      <p><label>数据集 <select id="nsid">${G.ds.filter(d => !d.building).map(d => `<option>${esc(d.id)}</option>`).join('')}</select></label></p>
+      <p class="mute">写 examples/xlerobot/&lt;数据集名&gt;_trim.json；已存在就直接打开它。</p>
+      <p><button class="on" id="go">新建</button> <button id="cancel">取消</button></p>`;
+    $('#cancel', dlg).onclick = () => dlg.close();
+    $('#go', dlg).onclick = () => api('/api/spec/new', {id: $('#nsid', dlg).value})
+      .then(r => { LS.set('spec', r.name); location.hash = '#review?spec=' + r.name; location.reload(); }).catch(e => status(e.message, 1));
+    dlg.showModal();
   };
 
   let D = [], cur = null, sel = null;
@@ -385,7 +401,9 @@ async function pageReview(q, view, tools) {
     status('读取 ' + $('#spec').value);
     let R;
     try { R = await api('/api/review?' + ruleQ()); } catch (e) { view.innerHTML = `<p class="err">${esc(e.message)}</p>`; status(''); return; }
-    D = R.episodes; D.forEach((d, i) => { d.i = i; d.w = eff(d); });
+    D = R.episodes;
+    if ($('#sort').value === 'q') D.sort((x, y) => (y.q[0] ?? -1) - (x.q[0] ?? -1));
+    D.forEach((d, i) => { d.i = i; d.w = eff(d); });
     showInfo([], R.sources.map(s => dsLabel(G.by[s.ds]) || s.ds).join('　'));
     $('#fsrc').innerHTML = '<option value="">全部</option>' + R.sources.map(s => `<option>${esc(s.ds)}</option>`).join('');
     view.innerHTML = '<div class="cards"></div>';
@@ -398,7 +416,8 @@ async function pageReview(q, view, tools) {
     status('按新规则计算…');
     const R = await api('/api/review?' + ruleQ()).catch(e => status(e.message, 1));
     if (!R) return;
-    R.episodes.forEach((r, i) => { const d = D[i]; Object.assign(d, r, {i}); d.w = eff(d); draw(d); });
+    const key = r => `${r.ds}|${r.ep}|${r.seg}`, byKey = Object.fromEntries(R.episodes.map(r => [key(r), r]));
+    D.forEach(d => { Object.assign(d, byKey[key(d)], {i: d.i}); d.w = eff(d); draw(d); });
     counts(); filter(); status('已按新规则更新（手动改过的条目不变）');
   }
 
@@ -406,26 +425,26 @@ async function pageReview(q, view, tools) {
     const sn = d.snaps.map(([t, j, v]) => `${sec(t)}秒 ${NAMES[j]} 跳 ${v}`).join('；') || '无';
     const pa = d.pauses.map(([a, b]) => `${sec(a)}–${sec(b)}秒`).join('；') || '无';
     const c = el(`<section class="card" data-i="${d.i}">
-      <header><b>#${d.i}</b> ${esc(d.ds)} ep${d.ep}<span>原始 ${sec(d.n)} 秒</span><span class="sel"></span><span class="edited"></span><span class="chips"></span></header>
+      <header><b>#${d.i}</b> ${esc(d.ds)} ep${d.ep}${d.seg != null ? ` 第 ${d.seg + 1} 段` : ''}<span title="平顺 ${f2(d.q[1])} · 用时 ${f2(d.q[2])} · 停顿 ${f2(d.q[3])}">质量 ${f2(d.q[0])}</span><span>原始 ${sec(d.n)} 秒</span><span class="sel"></span><span class="edited"></span><span class="chips"></span></header>
       <div class="bar"><div class="ph"></div></div><div class="cvbox"></div>
       <p class="meta">突变（红线）：${sn}。停顿 &gt; 1 秒（黄色）：${pa}。细框 = 规则算出的保留范围。曲线：实线 = 从臂 observation.state，虚线 = 主臂指令 action</p>
       <div class="row"><div class="pl"></div><div class="strip"></div></div>
-      <footer><button class="drop">整条不要</button><button class="addcut">加剪切段</button><button class="reset" title="回到 spec 的原始版本 + 当前规则">恢复初始</button><span class="lab labeler"></span></footer></section>`);
+      <footer><button class="drop">${d.seg != null ? '这段不要' : '整条不要'}</button>${d.seg != null ? '' : '<button class="addcut">加剪切段</button>'}<button class="reset" title="回到 spec 的原始版本 + 当前规则">恢复初始</button><span class="lab labeler"></span></footer></section>`);
     d.c = c;
     const stills = [[Math.max(d.first - 15, 0), '剪掉部分（起点前 0.5 秒）'], [d.first, '保留起点'], [d.end - 1, '保留终点'], [Math.min(d.end + 14, d.n - 1), '剪掉部分（终点后 0.5 秒）']];
     d.snaps.forEach(([t], k) => stills.push([t - 2, `突变${k + 1}之前`], [t + 1, `突变${k + 1}之后`]));
     $('.strip', c).innerHTML = stills.map(([f, t]) => `<figure data-f="${f}"><img loading="lazy" src="${frameUrl(d.ds, Object.keys(d.video)[0], d.ep, f)}"><figcaption>${t} · ${sec(f)}s</figcaption></figure>`).join('');
     $('.strip', c).onclick = ev => { const f = ev.target.closest('figure'); if (f && d.p) { d.p.pause(); d.p.seek(+f.dataset.f); } };
-    labeler($('.lab', c), d.ds, d.ep, d.label, l => { d.label = l; head(d); counts(); });
+    labeler($('.lab', c), d.ds, d.seg != null ? `${d.ep}.${d.seg}` : d.ep, d.label, l => { d.label = l; head(d); counts(); });
     head(d); draw(d);
     c.addEventListener('pointerdown', () => setCur(d), true);
     bindBar(d);
     $('.drop', c).onclick = () => { d.w.drop = !d.w.drop; draw(d); save(d); };
-    $('.addcut', c).onclick = () => {
+    if (d.seg == null) $('.addcut', c).onclick = () => {
       const m = d.p ? d.p.f : Math.round((d.w.a + d.w.b) / 2);
       d.w.cuts.push([Math.max(m - 30, d.w.a), Math.min(m + 30, d.w.b)]); sel = {d, k: d.w.cuts.length - 1}; draw(d); save(d);
     };
-    $('.reset', c).onclick = () => api('/api/review/edit', {spec: $('#spec').value, repo: d.repo, ep: d.ep, edit: null})
+    $('.reset', c).onclick = () => api('/api/review/edit', {spec: $('#spec').value, ds: d.ds, ep: d.ep, seg: d.seg, edit: null})
       .then(e => { d.edit = e; d.w = eff(d); draw(d); counts(); status(`已恢复 ${d.ds} ep${d.ep}`); }).catch(e => status(e.message, 1));
     io.observe(c); vis.observe(c);
     return c;
@@ -454,7 +473,7 @@ async function pageReview(q, view, tools) {
   const saveT = {};
   function save(d) {
     clearTimeout(saveT[d.i]);
-    saveT[d.i] = setTimeout(() => api('/api/review/edit', {spec: $('#spec').value, repo: d.repo, ep: d.ep, edit: d.w})
+    saveT[d.i] = setTimeout(() => api('/api/review/edit', {spec: $('#spec').value, ds: d.ds, ep: d.ep, seg: d.seg, edit: d.w})
       .then(e => { d.edit = e; draw(d); counts(); status(`已保存到 ${$('#spec').value}：${d.ds} ep${d.ep}`); })
       .catch(e => status('保存失败：' + e.message, 1)), 150);
   }
@@ -505,6 +524,7 @@ async function pageReview(q, view, tools) {
   function filter() { D.forEach(d => { d.c.style.display = shown(d) ? '' : 'none'; }); }
   ['#fsrc', '#ftag', '#fsnap', '#fpause', '#fedit', '#fdrop'].forEach(s => $(s).onchange = filter);
   $('#kloop').onchange = () => D.forEach(d => d.p && (d.p.range = loopRange(d)));
+  $('#sort').onchange = render;
 
   function setCur(d) { if (cur && cur !== d) cur.c.classList.remove('cur'); cur = d; d.c.classList.add('cur'); }
   const onKey = ev => {
@@ -512,9 +532,9 @@ async function pageReview(q, view, tools) {
     const shownD = D.filter(d => d.c.style.display !== 'none');
     if (!cur || cur.c.style.display === 'none') { const c0 = shownD.find(d => d.c.getBoundingClientRect().bottom > 120); if (c0) setCur(c0); }
     if (!cur) return;
-    if ('jJkK'.includes(ev.key) && ev.key.length === 1) {
+    if ('aAdD'.includes(ev.key) && ev.key.length === 1) {
       ev.preventDefault();
-      const k = shownD.indexOf(cur), nx = shownD[Math.max(0, Math.min(shownD.length - 1, k + ('jJ'.includes(ev.key) ? 1 : -1)))];
+      const k = shownD.indexOf(cur), nx = shownD[Math.max(0, Math.min(shownD.length - 1, k + ('dD'.includes(ev.key) ? 1 : -1)))];
       if (nx) { setCur(nx); nx.c.scrollIntoView({block: 'start'}); }
     } else if (ev.key === ' ') {
       ev.preventDefault();
@@ -532,7 +552,7 @@ async function pageReview(q, view, tools) {
   G.cleanup.push(() => document.removeEventListener('keydown', onKey));
 
   $('#exp').onclick = () => {
-    const out = D.map(d => ({i: d.i, src: d.ds, ep: d.ep, ...d.w, edited: !!edited(d), review: d.label.v || '', note: d.label.note || '', tags: d.label.tags || []}));
+    const out = D.map(d => ({i: d.i, src: d.ds, ep: d.ep, seg: d.seg, ...d.w, edited: !!edited(d), review: d.label.v || '', note: d.label.note || '', tags: d.label.tags || []}));
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], {type: 'application/json'}));
     a.download = $('#spec').value.replace('.json', '') + '_review.json'; a.click();
@@ -550,7 +570,7 @@ async function rebuildDialog(spec, rule) {
     <p>先把每条的精确保留范围写进 <code>examples/xlerobot/${esc(spec)}</code> 的 <code>range</code>（手动改过的不变，其余按当前规则：结尾容差 ${rule.reset_tol}、
     ${rule.to_target ? '用' : '不用'} --to_target、${rule.snap_rule ? '用' : '不用'}突变规则），再在后台（setsid）运行 <code>trim_stagnant_frames.py --spec</code>。
     目标名字相同的来源合并成一个数据集。</p>
-    ${R.sources.map(s => `<p><label>${esc(s.repo)} → wwqcleverghost/<input data-repo="${esc(s.repo)}" value="${esc(s.dst || s.ds + '-trimmed-new')}" size="34"></label> <span class="ex"></span></p>`).join('')}
+    ${R.sources.map(s => `<p><label>${esc(s.repo)} → wwqcleverghost/<input data-repo="${esc(s.repo)}" value="${esc(s.dst || s.ds.split('/')[0] + '-trimmed-new')}" size="34"></label> <span class="ex"></span></p>`).join('')}
     <p><label><input type="checkbox" id="ow">目标已存在时覆盖（旧的改名为 &lt;名字&gt;.old_&lt;时间&gt;，不删除）</label>
     <label><input type="checkbox" id="arm">只保留 12 个手臂关节（--arm_only）</label></p>
     <p><button class="on" id="go">开始重建</button> <button id="cancel">取消</button> <span id="rbmsg"></span></p>`;
@@ -605,15 +625,15 @@ async function pageBatch(q, view, tools) {
   tools.innerHTML = `<button id="play" class="on">▶ 全部播放</button><button id="rst">⏮ 从头</button>
     <label>画面 <select id="cams"><option value="head">只看头部相机</option><option value="all">三路相机</option></select></label>
     <label>格子宽 <input id="cw" type="range" min="160" max="640" step="20" value="${cw}"></label>
-    <label>每页 <select id="ps"><option>12</option><option selected>24</option><option>48</option></select></label>
+    <label>每页 <select id="ps"><option selected>25</option><option>50</option><option>100</option></select></label>
     <span style="border-left:1px solid var(--line);height:18px"></span>
     <label>来源 <select id="fsrc"></select></label><label>标签 <select id="ftag"></select></label>
     <label>结果 <select id="fres"><option value="">全部</option><option value="1">成功</option><option value="0">失败</option></select></label>
     <label title="每条的质量分（report.py quality，基准 ${REF_NAME} 中位数）">质量分 <input id="qmin" type="number" step="0.05" min="0" max="1" style="width:58px" placeholder="≥"> – <input id="qmax" type="number" step="0.05" min="0" max="1" style="width:58px" placeholder="≤"></label>
     <span id="count" class="mute"></span><span class="mute">空格 全部播放/暂停 · 点格子标题看大图、曲线、打标签</span>`;
   if (pick) {
-    tools.prepend(el(`<span class="pickbar">来自筛选：预设 ${esc(pick.preset)}，${esc(pick.what)}共 ${pick.eps.length} 条 <button id="back">返回筛选</button></span>`));
-    $('#back').onclick = () => { location.hash = '#curate'; };
+    tools.prepend(el(`<span class="pickbar">来自筛选：预设 ${esc(pick.preset)}，${esc(pick.what)}共 ${pick.eps.length} 条 <button id="back">返回训练集质量</button></span>`));
+    $('#back').onclick = () => { location.hash = '#quality'; };
   }
   view.style.setProperty('--cw', cw + 'px');
   $('#cw').oninput = ev => { view.style.setProperty('--cw', ev.target.value + 'px'); LS.set('batch_cw', +ev.target.value); };
@@ -660,11 +680,18 @@ async function pageBatch(q, view, tools) {
     page = Math.min(page, pages - 1);
     const sl = list.slice(page * ps, page * ps + ps);
     $('#count').textContent = `显示 ${list.length} / ${E.length} 条`;
-    view.innerHTML = `<div class="grid"></div><div class="pager"><button id="prev">上一页</button><span>${page + 1} / ${pages}</span><button id="next">下一页</button></div>`;
+    view.innerHTML = `<div class="grps"></div><div class="pager"><button id="prev">上一页</button><span>${page + 1} / ${pages}</span><button id="next">下一页</button></div>`;
     $('#prev').onclick = () => { if (page > 0) { page--; draw(); } };
     $('#next').onclick = () => { if (page < pages - 1) { page++; draw(); } };
-    const grid = $('.grid', view), head = $('#cams').value === 'head';
+    // one block per dataset, so episodes of different datasets don't run together
+    const grps = $('.grps', view), head = $('#cams').value === 'head';
+    let grid, gid;
     cells = sl.map((e, k) => {
+      if (e.id !== gid) {
+        gid = e.id;
+        const g = el(`<div class="dsgrp"><h4>${esc(e.id)} <span class="mute">${list.filter(x => x.id === e.id).length} 条</span></h4><div class="grid"></div></div>`);
+        grps.append(g); grid = $('.grid', g);
+      }
       const box = el('<div class="cell"><div class="cap"></div><div class="pl"></div></div>');
       grid.append(box);
       const c = {e, box, p: new Player($('.pl', box), {id: e.id, ep: e.ep, n: e.n, video: e.video, loop: false,
@@ -762,7 +789,9 @@ async function historyRows(kind, onrows) {
 }
 
 // =====================================================================================================
-// page 2: training-set quality — per-episode metrics, rank distribution, several datasets side by side, history
+// page 2: training-set quality and picking high-quality episodes — history of all datasets, curate.py rules with thresholds
+// (presets, forced keep / drop, start / end frame review with manual marks), rank distribution, one per-episode table,
+// batch playback of the result, trim spec + rebuild of the kept episodes
 // =====================================================================================================
 const QM = [  // key, label, format, note
   ['duration_s', '时长', x => fx(x, 1) + ' s', '整条时长'],
@@ -775,17 +804,71 @@ const QM = [  // key, label, format, note
   ['q', '质量分', x => fx(x, 2), 'report.py quality：0.4 平滑 + 0.3 速度 + 0.3 不停顿，对比人类基准中位数'],
 ];
 async function pageQuality(q, view, tools) {
-  const def = ['v4-handover2-trimmed', 'v5-handover-perfect', 'v6-handover-curated', 'raw-handover-20260929-trimmed', 'raw-handover-20261001-trimmed'];
+  // training-set quality + picking high-quality episodes (curate.py rules, the same code as the command line), one page
+  const def = ['raw-handover-20260929-trimmed', 'raw-handover-20261001-trimmed'];
   let ids = (q.ds ? q.ds.split(',') : LS.get('quality_ds', def)).filter(i => G.by[i] && !G.by[i].eval && !G.by[i].building).slice(0, SLOTS);
-  let metric = LS.get('quality_metric', 'p95_jerk');
-  const setIds = v => { ids = v.slice(0, SLOTS); LS.set('quality_ds', ids); setQuery({ds: ids.join(',')}); picker('multi', ids, d => !d.eval && !d.building, setIds); hist(); detail(); };
-  picker('multi', ids, d => !d.eval && !d.building, setIds);
-  tools.innerHTML = `<span class="mute">jerk、峰值速度看从臂 observation.state；停顿看主臂指令 action；质量分对比人类基准 ${REF_NAME} 中位数；
-    IQR 标记 = 超过该数据集 Q3 + 1.5×IQR（时长也标过短）。点历史表的行加入/移出对比（最多 ${SLOTS} 个），点图上的点或逐条表的行看视频。</span>`;
+  let metric = LS.get('quality_metric', 'p95_jerk'), H = null, data = {};
+  const P = await api('/api/curate/presets');
+  let pname = LS.get('curate_preset', 'default');
+  if (!P.presets[pname]) pname = 'default';
+  let cur = JSON.parse(JSON.stringify({...P.default, ...(P.presets[pname] || {})})), R = null;
+  let show = LS.get('curate_show', 'all'), mode = LS.get('curate_mode', 'list');  // show: all | kept | gone
+  const setIds = (v, fromPicker) => {
+    if (v.length > SLOTS) return status(`最多 ${SLOTS} 个数据集，先取消一个`, 1);
+    ids = v; LS.set('quality_ds', ids); setQuery({ds: ids.join(',')});
+    if (!fromPicker) picker('multi', ids, d => !d.eval && !d.building, setIds, SLOTS);
+    hist(); detail(); run();
+  };
+  picker('multi', ids, d => !d.eval && !d.building, setIds, SLOTS);
+  tools.innerHTML = `<label>预设 <select id="pre">${Object.keys(P.presets).map(n => `<option ${n === pname ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+    <input id="pname" placeholder="新预设名" size="12"><button id="psave">另存为预设</button>
+    <span id="count" class="mute"></span>
+    <span class="segs" id="show">${[['all', '全部'], ['kept', '只看保留的'], ['gone', '只看去掉的']].map(([k, t]) => `<button data-s="${k}" class="${show === k ? 'on' : ''}">${t}</button>`).join('')}</span>
+    <span class="segs" id="mode">${[['list', '表格'], ['frames', '起止画面']].map(([k, t]) => `<button data-m="${k}" class="${mode === k ? 'on' : ''}">${t}</button>`).join('')}</span>
+    <button id="bkept">批量播放保留的</button><button id="bgone">批量播放去掉的</button>
+    <span class="mute">筛选条件和数字与命令行 curate.py 相同；jerk、峰值速度看从臂 observation.state，停顿看主臂指令 action，质量分对比 ${REF_NAME} 中位数；
+    点历史表的行加入 / 移出数据集（最多 ${SLOTS} 个），点图上的点或表格的行看视频，行尾按钮强制保留 / 去掉（存在 dataset_labels.json）</span>`;
   view.innerHTML = `<div class="panel" id="hist"><h3>历史：所有训练 / 示范数据集（每列为该数据集各条的中位数）</h3><div class="tb"></div></div>
+    <div class="panel" id="rules"><h3>筛选条件</h3><div class="tb"></div></div>
+    <div class="panel" id="sum"><h3>结果</h3><div class="body"></div>
+      <p><input id="sname" placeholder="spec 名，例如 v7-handover-curated" size="30"> <button id="mkspec">按筛选结果生成 spec</button>
+      <button id="build" class="on" disabled>构建数据集…</button> <span id="smsg" class="mute"></span></p></div>
     <div class="panel" id="rank"><h3>排名分布</h3><div class="chips"></div><div class="legend lg"></div><div class="chart"></div></div>
-    <div class="panel" id="eps"><h3>逐条 <label class="mute" style="font-weight:400"><input type="checkbox" id="fflag"> 只看有 IQR 标记的</label></h3><div class="tb"></div></div>`;
-  let H = null, data = {};
+    <div class="panel" id="eps"><h3>逐条 <label class="mute" style="font-weight:400"><input type="checkbox" id="fflag"> 只看有 IQR 标记的</label></h3><div class="tb"></div></div>
+    <div class="panel" id="frames" hidden><h3>起止画面审阅 <span class="prog mute"></span></h3>
+      <p class="mute">每条左边是保留范围第一帧、右边是最后一帧（头部相机）。按键：A / D 或方向键换条，1 = 开头立着，2 = 放进框里，3 = 没问题（标完跳到下一条，再按一次取消）。
+      标了前两个就去掉这条；"没问题"只记作看过。<label><input type="checkbox" id="unseen">只看还没看过的</label>
+      <label><input type="checkbox" id="hinted">只看有疑似提示的</label></p><div class="fgrid"></div><div class="pager"></div></div>`;
+  const ruleTable = () => {
+    const box = $('#rules .tb'), gone = k => R ? R.rows.filter(r => k in r.reasons).length : '';
+    box.innerHTML = `<table class="rt"><tr><th>开</th><th>条件</th><th>阈值</th><th>不满足</th></tr>${P.rules.map(r => {
+      const c = cur[r.key];
+      const inputs = Object.keys(r.params).map(k => k === 'ref'
+        ? `基准 <select data-k="${r.key}" data-p="ref">${G.ds.filter(d => !d.eval).map(d => `<option ${d.id === c.ref ? 'selected' : ''}>${esc(d.id)}</option>`).join('')}</select>`
+        : `${k} <input type="number" step="any" style="width:70px" data-k="${r.key}" data-p="${k}" value="${c[k]}">`).join(' ');
+      return `<tr><td><input type="checkbox" data-k="${r.key}" data-p="on" ${c.on ? 'checked' : ''}></td>
+        <td>${esc(r.label)}${r.new ? ' <span class="chip bad">新指标，待确认</span>' : ''}<div class="mute help">${esc(r.help)}</div></td>
+        <td>${inputs}</td><td>${c.on ? gone(r.key) + ' 条' : ''}</td></tr>`;
+    }).join('')}</table>`;
+    box.onchange = ev => {
+      const t = ev.target, k = t.dataset.k, p = t.dataset.p;
+      if (!k) return;
+      cur[k][p] = p === 'on' ? t.checked : p === 'ref' ? t.value : +t.value;
+      run();
+    };
+  };
+  let tm, seq = 0;
+  async function run(patch) {  // patch: only refresh marks / counts, keep the cards on screen (no reload, no flicker)
+    clearTimeout(tm);
+    tm = setTimeout(async () => {
+      const my = ++seq;
+      if (!ids.length) { $('#sum .body').innerHTML = '<p class="mute">在上面选择数据集。</p>'; return; }
+      status('计算中…（第一次算一个数据集要解码首尾画面，约十几秒）');
+      try { R = await api('/api/curate/run', {ids, preset: cur}); } catch (e) { status(e.message, 1); return; }
+      if (my !== seq) return;
+      status(''); ruleTable(); summary(); render(patch);
+    }, patch ? 0 : 120);
+  }
   function hist() {
     if (!H) return;
     const rows = H.rows.map(r => ({...r, _sel: ids.includes(r.id)})).sort((a, b) => b.version - a.version || a.id.localeCompare(b.id));
@@ -800,13 +883,14 @@ async function pageQuality(q, view, tools) {
     ], r => { if (r.error) return; setIds(ids.includes(r.id) ? ids.filter(x => x !== r.id) : [...ids, r.id]); });
   }
   historyRows('quality', h => { H = h; hist(); });
+  historyRows('quality', h => { H = h; hist(); });
   async function detail() {
-    $('#rank .chart').innerHTML = $('#eps .tb').innerHTML = ids.length ? '<p class="mute">加载中…</p>' : '<p class="mute">在历史表里点选数据集。</p>';
+    $('#rank .chart').innerHTML = ids.length ? '<p class="mute">加载中…</p>' : '<p class="mute">在历史表里点选数据集。</p>';
     await Promise.all(ids.filter(i => !data[i]).map(async i => {
       try { const [r, info] = await Promise.all([api('/api/quality?id=' + encodeURIComponent(i)), episodeInfo(i)]); data[i] = r.rows.map(x => ({...info[x.ep], ...x, id: i})); }
       catch (e) { status(`${i}: ${e.message}`, 1); data[i] = []; }
     }));
-    chart(); eps();
+    chart(); render();
   }
   function chart() {
     $('#rank .chips').innerHTML = QM.map(([k, t, , note]) => `<button class="${k === metric ? 'on' : ''}" data-k="${k}" title="${esc(note)}">${t}</button>`).join(' ');
@@ -841,153 +925,6 @@ async function pageQuality(q, view, tools) {
       c.onclick = () => { tip(); const f = find(c); openModal(f.s.pts.map(p => ({...p, title: `${m[1]} ${m[2](p[metric])}`})), f.i); };
     });
   }
-  function eps() {
-    const slots = colorSlots(ids), flagged = $('#fflag').checked;
-    const rows = ids.flatMap(i => data[i] || []).filter(r => !flagged || r.flags.length);
-    table($('#eps .tb'), rows, [
-      ['id', '数据集', r => `<i class="sw" style="background:${sv(slots[r.id])}"></i>${esc(r.id)}`],
-      ['ep', 'ep', r => r.ep],
-      ...QM.map(([k, t, f]) => [k, t, r => r[k] == null ? '–' : f(r[k])]),
-      ['flags', 'IQR 标记', r => r.flags.map(esc).join(' '), r => r.flags.length],
-      ['label', '标注', r => tagChips(r.label), r => (r.label && r.label.tags || []).join()],
-    ], (r, shown, k) => openModal(shown.map(x => ({...x, title: `质量 ${fx(x.q)}`, onlabel: l => { x.label = l; }})), k), metric);
-  }
-  $('#fflag').onchange = eps;
-  $('#modal').addEventListener('closed', () => document.body.contains($('#eps')) && eps());
-  const onResize = () => chart();
-  window.addEventListener('resize', onResize);
-  G.cleanup.push(() => window.removeEventListener('resize', onResize));
-  detail();
-}
-
-// =====================================================================================================
-// page 4: eval scores (docs/workflows/eval-scoring): completion, quality, total with 95% CI, stage funnel, per trial
-// =====================================================================================================
-const STAGE_ZH = ['前往', '抓住', '交接前不掉', '交接成功', '放好'];
-async function pageEval(q, view, tools) {
-  let ids = (q.ds ? q.ds.split(',') : LS.get('eval_ds', [])).filter(i => G.by[i] && G.by[i].eval);
-  const setIds = v => { ids = v; LS.set('eval_ds', ids); setQuery({ds: ids.join(',')}); picker('multi', ids, d => d.eval, setIds); hist(); detail(); };
-  picker('multi', ids, d => d.eval, setIds);
-  tools.innerHTML = `<span class="mute">总分 = 0.5 × 完成度 + 0.5 × 质量。完成度 = 5 个阶段通过率 (通过+1)/(进入+2) 截断后平均（≤0.5 记 0）；
-    质量 = 0.4 平滑 + 0.3 速度 + 0.3 不停顿，对比人类基准 ${REF_NAME} 中位数。区间：完成度/质量/总分按试次自助抽样 2000 次，阶段和成功率用 Wilson。
-    规则见 docs/workflows/eval-scoring/README.zh.md。点历史表的行看详情。</span>`;
-  view.innerHTML = `<div class="panel" id="hist"><h3>历史：所有评测</h3><div class="tb"></div></div><div id="det"></div>`;
-  let H = null;
-  function hist() {
-    if (!H) return;
-    const rows = H.rows.map(r => ({...r, _sel: ids.includes(r.id)})).sort((a, b) => b.version - a.version || (b.total ? b.total[0] : -1) - (a.total ? a.total[0] : -1));
-    $('#hist h3').innerHTML = `历史：所有评测（新版本在上，同版本按总分排）${H.pending.length ? ` <span class="mute">· 后台计算中，还剩 ${H.pending.length} 个…</span>` : ''}`;
-    table($('#hist .tb'), rows, [
-      ['id', '评测数据集', r => `<span class="nm" title="${esc(r.id)}">${esc(r.id)}</span>` + (r.error ? ` <span class="err" title="${esc(r.error)}">读取失败</span>` : '')],
-      ['version', '版本', r => verName(r.version)],
-      ['success', '成功', r => r.success || '–', r => r.success_rate && r.success_rate[0]],
-      ['success_rate', '成功率 [Wilson]', r => ciBar(r.success_rate, 100), r => r.success_rate && r.success_rate[0]],
-      ['completion', '完成度 [95% CI]', r => ciBar(r.completion, 100), r => r.completion && r.completion[0]],
-      ['quality', '质量 [95% CI]', r => ciBar(r.quality, 100), r => r.quality && r.quality[0]],
-      ['total', '总分 [95% CI]', r => ciBar(r.total, 100), r => r.total && r.total[0]],
-      ['stages', '阶段漏斗（通过/进入）', r => r.stages ? r.stages.map(s => `${s.k}/${s.n}`).join(' → ') : '–', r => r.stages && r.stages[4].k],
-    ], r => { if (r.error) return; setIds(ids.includes(r.id) ? ids.filter(x => x !== r.id) : [r.id, ...ids]); });
-  }
-  historyRows('eval', h => { H = h; hist(); });
-  async function detail() {
-    const det = $('#det');
-    det.innerHTML = ids.length ? '' : '<p class="mute">在历史表里点一个或多个评测，看阶段漏斗和逐试次结果。</p>';
-    for (const id of ids) {
-      const box = el(`<div class="panel"><h3>${esc(id)}</h3><p class="mute">加载中…</p></div>`);
-      det.append(box);
-      let r, info;
-      try { [r, info] = await Promise.all([api('/api/eval?id=' + encodeURIComponent(id)), episodeInfo(id)]); }
-      catch (e) { box.innerHTML = `<h3>${esc(id)}</h3><p class="err">${esc(e.message)}</p>`; continue; }
-      const W = 300, funnel = r.stages.map((s, i) => `<tr><td>${STAGE_ZH[i]}</td><td>${s.k}/${s.n}</td><td>${s.n ? ciBar([s.k / s.n, s.ci[0], s.ci[1]], 160) : '没走到'}</td>
-        <td class="mute">计分 ${fx(s.rate)}</td></tr>`).join('');
-      box.innerHTML = `<h3>${esc(id)} <button class="x" style="float:right">移出</button></h3>
-        <p>成功 <b>${r.success}</b> ${ciBar(r.success_rate, 100)}　完成度 ${ciBar(r.completion, 100)}　质量 ${ciBar(r.quality, 100)}　<b>总分</b> ${ciBar(r.total, 100)}</p>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start"><div><h4 style="margin:4px 0">阶段漏斗（通过/进入，Wilson 95%）</h4><table class="fn">${funnel}</table></div>
-        <div class="tr" style="min-width:0;flex:1"></div></div>`;
-      $('.x', box).onclick = () => setIds(ids.filter(x => x !== id));
-      const list = r.trials.map(t => ({...info[t.ep], ...t, id,
-        start: t.fail != null ? Math.max(t.fail - 45, 0) : 0,
-        title: (t.success ? '<span class="chip ok">成功</span>' : `<span class="chip bad">失败</span> 失败时刻约 ${sec(t.fail)} 秒（红色虚线）`) + ` · 质量 ${fx(t.q)}`}));
-      const dots = t => t.stages.map((v, i) => { const reached = t.stages.slice(0, i).every(Boolean); return `<i class="dot ${!reached ? 'n' : v ? 'p' : 'f'}" title="${STAGE_ZH[i]}：${!reached ? '没走到' : v ? '通过' : '失败'}"></i>`; }).join('');
-      table($('.tr', box), list, [
-        ['ep', '试次', t => `T${t.ep + 1}`],
-        ['success', '人工标签', t => `<span class="chip ${t.success ? 'ok' : 'bad'}">${t.success ? '成功' : '失败'}</span>`],
-        ['fail', '失败时刻', t => t.fail == null ? '' : `<button>▶ ${sec(t.fail)} 秒</button>`],
-        ['stages', '阶段 前往→放好', dots, t => t.stages.reduce((a, b) => a + b, 0)],
-        ['q_smooth', '平滑', t => fx(t.q_smooth)], ['q_speed', '速度', t => fx(t.q_speed)], ['q_idle', '不停顿', t => fx(t.q_idle)],
-        ['q', '质量', t => `<b>${fx(t.q)}</b>`],
-        ['task_s', '用时', t => t.task_s == null ? '–' : fx(t.task_s, 1) + ' s'],
-        ['rev_rate', '小幅来回', t => fx(t.rev_rate) + '/s'], ['idle_frac', '停顿占比', t => fx(100 * t.idle_frac, 0) + '%'],
-        ['label', '标注', t => tagChips(t.label), t => (t.label && t.label.tags || []).join()],
-      ], (t, shown, k) => openModal(shown.map(x => ({...x, onlabel: l => { x.label = l; }})), k, t.start));
-    }
-  }
-  detail();
-}
-// =====================================================================================================
-// boot
-// =====================================================================================================
-
-// =====================================================================================================
-// page 5: curate — rules with thresholds (curate.py, the same code as the command line), what each drops, forced
-// keep / drop, presets, trim spec + rebuild of the kept episodes
-// =====================================================================================================
-async function pageCurate(q, view, tools) {
-  const def = ['raw-handover-20260929-trimmed', 'raw-handover-20261001-trimmed'];
-  let ids = (q.ds ? q.ds.split(',') : LS.get('curate_ds', def)).filter(i => G.by[i] && !G.by[i].eval && !G.by[i].building);
-  const P = await api('/api/curate/presets');
-  let pname = LS.get('curate_preset', 'default');
-  if (!P.presets[pname]) pname = 'default';
-  let cur = JSON.parse(JSON.stringify({...P.default, ...(P.presets[pname] || {})})), R = null;
-  let show = LS.get('curate_show', 'all'), mode = LS.get('curate_mode', 'list');  // show: all | kept | gone
-  const setIds = v => { ids = v; LS.set('curate_ds', ids); setQuery({ds: ids.join(',')}); picker('multi', ids, d => !d.eval && !d.building, setIds); run(); };
-  picker('multi', ids, d => !d.eval && !d.building, setIds);
-  tools.innerHTML = `<label>预设 <select id="pre">${Object.keys(P.presets).map(n => `<option ${n === pname ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
-    <input id="pname" placeholder="新预设名" size="12"><button id="psave">另存为预设</button>
-    <span id="count" class="mute"></span>
-    <span class="segs" id="show">${[['all', '全部'], ['kept', '只看保留的'], ['gone', '只看去掉的']].map(([k, t]) => `<button data-s="${k}" class="${show === k ? 'on' : ''}">${t}</button>`).join('')}</span>
-    <span class="segs" id="mode">${[['list', '列表'], ['frames', '起止画面审阅']].map(([k, t]) => `<button data-m="${k}" class="${mode === k ? 'on' : ''}">${t}</button>`).join('')}</span>
-    <button id="bkept">批量播放保留的</button><button id="bgone">批量播放去掉的</button>
-    <span class="mute">规则和数字与命令行 curate.py 相同；点行看视频，行尾按钮强制保留 / 去掉（存在 dataset_labels.json）</span>`;
-  view.innerHTML = `<div class="panel" id="rules"><h3>筛选条件</h3><div class="tb"></div></div>
-    <div class="panel" id="sum"><h3>结果</h3><div class="body"></div>
-      <p><input id="sname" placeholder="spec 名，例如 v7-handover-curated" size="30"> <button id="mkspec">按筛选结果生成 spec</button>
-      <button id="build" class="on" disabled>构建数据集…</button> <span id="smsg" class="mute"></span></p></div>
-    <div class="panel" id="eps"><h3>逐条</h3><div class="tb"></div></div>
-    <div class="panel" id="frames" hidden><h3>起止画面审阅 <span class="prog mute"></span></h3>
-      <p class="mute">每条左边是保留范围第一帧、右边是最后一帧（头部相机）。按键：J / K 或方向键换条，1 = 开头立着，2 = 放进框里，3 = 没问题（标完跳到下一条，再按一次取消）。
-      标了前两个就去掉这条；"没问题"只记作看过。<label><input type="checkbox" id="unseen">只看还没看过的</label>
-      <label><input type="checkbox" id="hinted">只看有疑似提示的</label></p><div class="fgrid"></div><div class="pager"></div></div>`;
-  const ruleTable = () => {
-    const box = $('#rules .tb'), gone = k => R ? R.rows.filter(r => k in r.reasons).length : '';
-    box.innerHTML = `<table class="rt"><tr><th>开</th><th>条件</th><th>阈值</th><th>不满足</th></tr>${P.rules.map(r => {
-      const c = cur[r.key];
-      const inputs = Object.keys(r.params).map(k => k === 'ref'
-        ? `基准 <select data-k="${r.key}" data-p="ref">${G.ds.filter(d => !d.eval).map(d => `<option ${d.id === c.ref ? 'selected' : ''}>${esc(d.id)}</option>`).join('')}</select>`
-        : `${k} <input type="number" step="any" style="width:70px" data-k="${r.key}" data-p="${k}" value="${c[k]}">`).join(' ');
-      return `<tr><td><input type="checkbox" data-k="${r.key}" data-p="on" ${c.on ? 'checked' : ''}></td>
-        <td>${esc(r.label)}${r.new ? ' <span class="chip bad">新指标，待确认</span>' : ''}<div class="mute help">${esc(r.help)}</div></td>
-        <td>${inputs}</td><td>${c.on ? gone(r.key) + ' 条' : ''}</td></tr>`;
-    }).join('')}</table>`;
-    box.onchange = ev => {
-      const t = ev.target, k = t.dataset.k, p = t.dataset.p;
-      if (!k) return;
-      cur[k][p] = p === 'on' ? t.checked : p === 'ref' ? t.value : +t.value;
-      run();
-    };
-  };
-  let tm, seq = 0;
-  async function run(patch) {  // patch: only refresh marks / counts, keep the cards on screen (no reload, no flicker)
-    clearTimeout(tm);
-    tm = setTimeout(async () => {
-      const my = ++seq;
-      if (!ids.length) { $('#sum .body').innerHTML = '<p class="mute">在上面选择数据集。</p>'; return; }
-      status('计算中…（第一次算一个数据集要解码首尾画面，约十几秒）');
-      try { R = await api('/api/curate/run', {ids, preset: cur}); } catch (e) { status(e.message, 1); return; }
-      if (my !== seq) return;
-      status(''); ruleTable(); summary(); render(patch);
-    }, patch ? 0 : 120);
-  }
   const labelOf = k => k === 'all' ? '全部' : k === 'manual' ? '人工标记' : P.rules.find(r => r.key === k).short;
   function summary() {
     const kept = R.rows.filter(r => r.kept).length;
@@ -1002,10 +939,13 @@ async function pageCurate(q, view, tools) {
     $('#bgone').textContent = `批量播放去掉的 ${R.rows.length - kept} 条`;
   }
   function eps() {
-    const rows = R.rows.filter(shown);
+    const qual = Object.fromEntries(ids.flatMap(i => (data[i] || []).map(x => [i + '|' + x.ep, x])));
+    const slots = colorSlots(ids), flagged = $('#fflag').checked;
+    const rows = R.rows.filter(shown).map(r => ({...(qual[r.ds + '|' + r.ep] || {flags: []}), ...r})).filter(r => !flagged || r.flags.length);
     const ratio = (v, ref) => v == null || !ref ? '–' : fx(v / ref, 2) + '×';
+    const qm = k => QM.find(x => x[0] === k);
     table($('#eps .tb'), rows, [
-      ['ds', '数据集', r => esc(r.ds)], ['ep', 'ep', r => r.ep],
+      ['ds', '数据集', r => `<i class="sw" style="background:${sv(slots[r.ds])}"></i>${esc(r.ds)}`], ['ep', 'ep', r => r.ep],
       ['kept', '结果', r => `<span class="chip ${r.kept ? 'ok' : 'bad'}">${r.kept ? '保留' : '去掉'}</span>${r.force ? ' <span class="chip">手动</span>' : ''}`, r => +r.kept],
       ['reasons', '原因', r => Object.values(r.reasons).map(esc).join('；'), r => Object.keys(r.reasons).length],
       ['snaps', '突变', r => r.snaps], ['pauses', '最长停顿', r => r.pauses.length ? fx(Math.max(...r.pauses), 1) + 's' : '', r => Math.max(0, ...r.pauses)],
@@ -1014,6 +954,9 @@ async function pageCurate(q, view, tools) {
       ['closes', '闭合 L/R', r => `${r.closesL}/${r.closesR}`, r => Math.max(r.closesL, r.closesR)],
       ['tape_px_end', '末帧胶带', r => r.tape_px_end], ['tape_x_start', '先抓 / x', r => `${r.first_arm || '-'} ${r.tape_x_start ?? '–'}`],
       ['hw_start', '开头高/宽', r => r.hw_start],
+      ...['duration_s', 'p95_jerk', 'max_velocity', 'static_fraction', 'q'].map(k => [k, qm(k)[1], r => r[k] == null ? '–' : qm(k)[2](r[k])]),
+      ['flags', 'IQR 标记', r => r.flags.map(esc).join(' '), r => r.flags.length],
+      ['label', '标注', r => tagChips(r.label), r => (r.label && r.label.tags || []).join()],
       ['force', '强制', r => `<button data-f="keep" class="${r.force === 'keep' ? 'on' : ''}">保留</button><button data-f="drop" class="${r.force === 'drop' ? 'on' : ''}">去掉</button>${r.force ? '<button data-f="">自动</button>' : ''}`],
     ], async (r, shown, k, ev) => {
       const f = ev.target.dataset.f;
@@ -1021,7 +964,6 @@ async function pageCurate(q, view, tools) {
         await api('/api/label', {id: r.ds, ep: r.ep, patch: {force: f}}).catch(e => status(e.message, 1));
         return run();
       }
-      const info = await episodeInfo(r.ds);
       const list = await Promise.all(shown.map(async x => ({...(await episodeInfo(x.ds))[x.ep], id: x.ds,
         title: `<span class="chip ${x.kept ? 'ok' : 'bad'}">${x.kept ? '保留' : '去掉'}</span> ${Object.values(x.reasons).map(esc).join('；')}`})));
       openModal(list, k);
@@ -1104,8 +1046,8 @@ async function pageCurate(q, view, tools) {
   const onKey = ev => {
     if (mode !== 'frames' || ['INPUT', 'SELECT', 'TEXTAREA'].includes(ev.target.tagName) || $('#modal').open || !flist.length) return;
     const r = flist[fpage * FPAGE + focus];
-    if (['j', 'J', 'ArrowDown', 'ArrowRight'].includes(ev.key)) { ev.preventDefault(); move(1); }
-    else if (['k', 'K', 'ArrowUp', 'ArrowLeft'].includes(ev.key)) { ev.preventDefault(); move(-1); }
+    if (['d', 'D', 'ArrowDown', 'ArrowRight'].includes(ev.key)) { ev.preventDefault(); move(1); }
+    else if (['a', 'A', 'ArrowUp', 'ArrowLeft'].includes(ev.key)) { ev.preventDefault(); move(-1); }
     else if (['1', '2', '3'].includes(ev.key) && r) { ev.preventDefault(); setMark(r, MARKS[+ev.key - 1][0]); }
   };
   document.addEventListener('keydown', onKey);
@@ -1133,12 +1075,86 @@ async function pageCurate(q, view, tools) {
     $('#build').disabled = false;
   };
   $('#build').onclick = () => made && rebuildDialog(made, {reset_tol: 10, to_target: false, snap_rule: false});
+  $('#fflag').onchange = () => render();
+  $('#modal').addEventListener('closed', () => document.body.contains($('#eps')) && R && render(true));
+  const onResize = () => chart();
+  window.addEventListener('resize', onResize);
+  G.cleanup.push(() => window.removeEventListener('resize', onResize));
   ruleTable();
+  detail();
   await run();
   buildPanel();
 }
 
-const PAGES = {review: pageReview, batch: pageBatch, quality: pageQuality, eval: pageEval, curate: pageCurate};
+// =====================================================================================================
+// page 4: eval scores (docs/workflows/eval-scoring): completion, quality, total with 95% CI, stage funnel, per trial
+// =====================================================================================================
+const STAGE_ZH = ['前往', '抓住', '交接前不掉', '交接成功', '放好'];
+async function pageEval(q, view, tools) {
+  let ids = (q.ds ? q.ds.split(',') : LS.get('eval_ds', [])).filter(i => G.by[i] && G.by[i].eval);
+  const setIds = (v, fromPicker) => { ids = v; LS.set('eval_ds', ids); setQuery({ds: ids.join(',')}); if (!fromPicker) picker('multi', ids, d => d.eval, setIds); hist(); detail(); };
+  picker('multi', ids, d => d.eval, setIds);
+  tools.innerHTML = `<span class="mute">总分 = 0.5 × 完成度 + 0.5 × 质量。完成度 = 5 个阶段通过率 (通过+1)/(进入+2) 截断后平均（≤0.5 记 0）；
+    质量 = 0.4 平滑 + 0.3 速度 + 0.3 不停顿，对比人类基准 ${REF_NAME} 中位数。区间：完成度/质量/总分按试次自助抽样 2000 次，阶段和成功率用 Wilson。
+    规则见 docs/workflows/eval-scoring/README.zh.md。点历史表的行看详情。</span>`;
+  view.innerHTML = `<div class="panel" id="hist"><h3>历史：所有评测</h3><div class="tb"></div></div><div id="det"></div>`;
+  let H = null;
+  function hist() {
+    if (!H) return;
+    const rows = H.rows.map(r => ({...r, _sel: ids.includes(r.id)})).sort((a, b) => b.version - a.version || (b.total ? b.total[0] : -1) - (a.total ? a.total[0] : -1));
+    $('#hist h3').innerHTML = `历史：所有评测（新版本在上，同版本按总分排）${H.pending.length ? ` <span class="mute">· 后台计算中，还剩 ${H.pending.length} 个…</span>` : ''}`;
+    table($('#hist .tb'), rows, [
+      ['id', '评测数据集', r => `<span class="nm" title="${esc(r.id)}">${esc(r.id)}</span>` + (r.error ? ` <span class="err" title="${esc(r.error)}">读取失败</span>` : '')],
+      ['version', '版本', r => verName(r.version)],
+      ['success', '成功', r => r.success || '–', r => r.success_rate && r.success_rate[0]],
+      ['success_rate', '成功率 [Wilson]', r => ciBar(r.success_rate, 100), r => r.success_rate && r.success_rate[0]],
+      ['completion', '完成度 [95% CI]', r => ciBar(r.completion, 100), r => r.completion && r.completion[0]],
+      ['quality', '质量 [95% CI]', r => ciBar(r.quality, 100), r => r.quality && r.quality[0]],
+      ['total', '总分 [95% CI]', r => ciBar(r.total, 100), r => r.total && r.total[0]],
+      ['stages', '阶段漏斗（通过/进入）', r => r.stages ? r.stages.map(s => `${s.k}/${s.n}`).join(' → ') : '–', r => r.stages && r.stages[4].k],
+    ], r => { if (r.error) return; setIds(ids.includes(r.id) ? ids.filter(x => x !== r.id) : [r.id, ...ids]); });
+  }
+  historyRows('eval', h => { H = h; hist(); });
+  async function detail() {
+    const det = $('#det');
+    det.innerHTML = ids.length ? '' : '<p class="mute">在历史表里点一个或多个评测，看阶段漏斗和逐试次结果。</p>';
+    for (const id of ids) {
+      const box = el(`<div class="panel"><h3>${esc(id)}</h3><p class="mute">加载中…</p></div>`);
+      det.append(box);
+      let r, info;
+      try { [r, info] = await Promise.all([api('/api/eval?id=' + encodeURIComponent(id)), episodeInfo(id)]); }
+      catch (e) { box.innerHTML = `<h3>${esc(id)}</h3><p class="err">${esc(e.message)}</p>`; continue; }
+      const W = 300, funnel = r.stages.map((s, i) => `<tr><td>${STAGE_ZH[i]}</td><td>${s.k}/${s.n}</td><td>${s.n ? ciBar([s.k / s.n, s.ci[0], s.ci[1]], 160) : '没走到'}</td>
+        <td class="mute">计分 ${fx(s.rate)}</td></tr>`).join('');
+      box.innerHTML = `<h3>${esc(id)} <button class="x" style="float:right">移出</button></h3>
+        <p>成功 <b>${r.success}</b> ${ciBar(r.success_rate, 100)}　完成度 ${ciBar(r.completion, 100)}　质量 ${ciBar(r.quality, 100)}　<b>总分</b> ${ciBar(r.total, 100)}</p>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start"><div><h4 style="margin:4px 0">阶段漏斗（通过/进入，Wilson 95%）</h4><table class="fn">${funnel}</table></div>
+        <div class="tr" style="min-width:0;flex:1"></div></div>`;
+      $('.x', box).onclick = () => setIds(ids.filter(x => x !== id));
+      const list = r.trials.map(t => ({...info[t.ep], ...t, id,
+        start: t.fail != null ? Math.max(t.fail - 45, 0) : 0,
+        title: (t.success ? '<span class="chip ok">成功</span>' : `<span class="chip bad">失败</span> 失败时刻约 ${sec(t.fail)} 秒（红色虚线）`) + ` · 质量 ${fx(t.q)}`}));
+      const dots = t => t.stages.map((v, i) => { const reached = t.stages.slice(0, i).every(Boolean); return `<i class="dot ${!reached ? 'n' : v ? 'p' : 'f'}" title="${STAGE_ZH[i]}：${!reached ? '没走到' : v ? '通过' : '失败'}"></i>`; }).join('');
+      table($('.tr', box), list, [
+        ['ep', '试次', t => `T${t.ep + 1}`],
+        ['success', '人工标签', t => `<span class="chip ${t.success ? 'ok' : 'bad'}">${t.success ? '成功' : '失败'}</span>`],
+        ['fail', '失败时刻', t => t.fail == null ? '' : `<button>▶ ${sec(t.fail)} 秒</button>`],
+        ['stages', '阶段 前往→放好', dots, t => t.stages.reduce((a, b) => a + b, 0)],
+        ['q_smooth', '平滑', t => fx(t.q_smooth)], ['q_speed', '速度', t => fx(t.q_speed)], ['q_idle', '不停顿', t => fx(t.q_idle)],
+        ['q', '质量', t => `<b>${fx(t.q)}</b>`],
+        ['task_s', '用时', t => t.task_s == null ? '–' : fx(t.task_s, 1) + ' s'],
+        ['rev_rate', '小幅来回', t => fx(t.rev_rate) + '/s'], ['idle_frac', '停顿占比', t => fx(100 * t.idle_frac, 0) + '%'],
+        ['label', '标注', t => tagChips(t.label), t => (t.label && t.label.tags || []).join()],
+      ], (t, shown, k) => openModal(shown.map(x => ({...x, onlabel: l => { x.label = l; }})), k, t.start));
+    }
+  }
+  detail();
+}
+// =====================================================================================================
+// boot
+// =====================================================================================================
+
+const PAGES = {review: pageReview, batch: pageBatch, quality: pageQuality, eval: pageEval, curate: pageQuality};  // #curate: old links
 async function show() {
   G.cleanup.splice(0).forEach(f => f());
   clearTimeout(G.buildT); clearTimeout(G.histT);

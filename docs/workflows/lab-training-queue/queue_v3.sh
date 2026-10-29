@@ -13,6 +13,9 @@
 #                        8K steps, lr 2e-5, padded actions masked; waits until v6_flow_h16_s8 has finished.
 #                        Data dir v6-corrections-v6stats = v6-corrections with v6-handover-curated's meta/stats.json,
 #                        so the normalization stays the one the base model was trained with.
+#   flow:v6mix           like flow:v6ft, but on v6-handover-curated-corrx3 = v6-handover-curated + v6-corrections
+#                        three times (corrections ~16% of the frames, v6-handover-curated's stats) so it does not
+#                        forget the full handover: 10K steps, saved every 2K
 #   fb:<base>            feedback denoising (arXiv 2609.21022, --policy.feedback) on top of the finished flow run
 #                        <base>, on that run's own dataset: <base>_fb. The planner is frozen and only the small
 #                        module trains: 40K steps, batch 12, 6 workers by default, since it loads 9 frames per
@@ -56,6 +59,9 @@ for job in "$@"; do
     flow:v7) name=v7-flow_h16_s8 data=v7-handover-clean steps=140000 keep=3 policy=("${FLOW[@]}") ;;
     flow:v6ft) name=v6ft_corrections_flow_h16_s8 data=v6-corrections root=$W/data/v6-corrections-v6stats steps=8000 save=2000
       base=v6_flow_h16_s8 policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model
+      --policy.optimizer_lr=2e-5 --policy.do_mask_loss_for_padding=true) ;;
+    flow:v6mix) name=v6-flow_h16_s8_corrmix data=v6-handover-curated-corrx3 steps=10000 save=2000
+      policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model
       --policy.optimizer_lr=2e-5 --policy.do_mask_loss_for_padding=true) ;;
     flow:noshift) name=dp_flow_h16_s8_noshift policy=("${FLOW[@]}" --policy.crop_is_random=false "--dataset.image_transforms.tfs=$COLOR") ;;
     fb:*|fbstale:*|fbstate:*) base=${job#*:} name=${base%@*}_${job%%:*}

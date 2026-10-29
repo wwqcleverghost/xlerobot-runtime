@@ -26,4 +26,4 @@
 - `docs/workflows/eval-grid-video/` — 把一次评测（10 个试次）合成 2x5 网格视频。
 - `docs/workflows/handover-dataset-curation/` — 检查、筛选、裁剪、合并交接数据集；含数据集质量检测标准（jerk、峰值速度、停顿）。
 - `docs/workflows/lab-training-queue/` — 在实验室服务器上启动、排队、续训、监控训练。
-- `docs/workflows/dataset-viewer/` — 本地数据集网页工具：裁剪审阅/微调并重建、批量播放、训练集质量、测试集打分（含历史对比）、筛选高质量数据（curate.py，网页"筛选"页；给 agent 的步骤见 `.claude/skills/select-high-quality-data/SKILL.md`）。
+- `docs/workflows/dataset-viewer/` — 本地数据集网页工具：裁剪审阅/微调并重建、批量播放、训练集质量、测试集打分（含历史对比）、筛选高质量数据（curate.py，网页"训练集质量 / 筛选"页；给 agent 的步骤见 `.claude/skills/select-high-quality-data/SKILL.md`）。

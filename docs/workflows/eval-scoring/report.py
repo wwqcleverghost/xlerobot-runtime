@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from score import score  # noqa: E402
+from score import locate, score  # noqa: E402
 from smooth import ep_metrics  # noqa: E402
 
 W_COMPLETION = 0.5
@@ -30,10 +30,9 @@ rng = np.random.default_rng(0)
 
 
 def trials(path):
-    path = f"{path}/dataset" if os.path.isdir(f"{path}/dataset") else path  # some eval uploads nest it
+    path, csv = locate(path)
     d = pd.concat(pd.read_parquet(f) for f in sorted(glob.glob(f"{path}/data/*/*.parquet")))
-    csv = f"{path}/success.csv"
-    lab = pd.read_csv(csv).set_index("episode").success if os.path.exists(csv) else None
+    lab = pd.read_csv(csv).set_index("episode").success if csv else None
     rows = [dict(ep=ep, **trial(np.stack(g["observation.state"].values), np.stack(g["action"].values),
                                 None if lab is None else lab[ep]))
             for ep, g in d.groupby("episode_index")]

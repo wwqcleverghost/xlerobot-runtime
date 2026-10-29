@@ -18,7 +18,8 @@ after its trimmed start (e.g. right after a failed grasp, to keep only the recov
 from inside the kept range and joins the rest, e.g. to shorten a mid-episode pause where the arms stand still.
 "root" reads a local dataset directory instead of the HF cache. "segments": {"<episode>": [[start, end], ...]}
 keeps exactly those frame ranges [start, end) instead of trimming, each range as its own episode (e.g. human
-takeover corrections cut out of eval recordings, see takeover_corrections.json).
+takeover corrections cut out of eval recordings, see takeover_corrections.json); "drop_seg": {"<episode>": [i, ...]}
+leaves out those segments (by index; the dataset viewer writes it).
 "range": {"<episode>": [first, end]} keeps exactly frames [first, end) of that episode instead of the head/tail rule
 (it replaces keep_range, --to_target and start_s there; "cut" still applies). The dataset viewer
 (docs/workflows/dataset-viewer) writes it for every episode before a rebuild, so the build is what the page shows.
@@ -158,7 +159,9 @@ def main():
         if "segments" in source:
             for ep, ranges in source["segments"].items():
                 lo, hi = bounds[int(ep)]
-                for start, end in ranges:
+                for i, (start, end) in enumerate(ranges):
+                    if i in source.get("drop_seg", {}).get(ep, []):
+                        continue
                     assert 0 <= start < end <= hi - lo, (source["repo"], ep, start, end)
                     episodes.append(list(range(lo + start, lo + end)))
         else:

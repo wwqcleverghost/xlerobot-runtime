@@ -6,7 +6,7 @@ description: Pick the high-quality episodes of XLeRobot handover datasets (drop 
 # 选高质量数据（curate）
 
 网页和命令行用的是同一套代码：`docs/workflows/dataset-viewer/curate.py`。用户自己在网页
-`http://localhost:8770/#curate`（"筛选"页）就能做；这个 skill 是替用户快速跑一遍。
+`http://localhost:8770/#quality`（"训练集质量 / 筛选"页）就能做；这个 skill 是替用户快速跑一遍。
 
 ## 步骤
 
@@ -21,9 +21,9 @@ description: Pick the high-quality episodes of XLeRobot handover datasets (drop 
    第一次算一个数据集要解码首尾画面，十几秒；之后读缓存。
 3. 想看新指标或改阈值时用 `--set`（不改预设文件），例如 `--set small_snap.on=1 --set stall.on=1`、`--set jerk.x=2.5`。
    把"默认结果"和"加了哪些条件后的结果"都报给用户，数字原样给。
-4. 交给用户：每条规则去掉了几条、最后剩多少；给出网页链接 `http://localhost:8770/#curate?ds=<id1>,<id2>`，
+4. 交给用户：每条规则去掉了几条、最后剩多少；给出网页链接 `http://localhost:8770/#quality?ds=<id1>,<id2>`，
    让用户在网页上点开被去掉的条看视频、需要时强制保留 / 去掉（存在 `examples/xlerobot/dataset_labels.json` 的 `force`）。
-   "开头胶带立着"和"放进框里"由用户在网页的"起止画面审阅"里人工标（`dataset_labels.json` 的 `manual`：standing / basket 去掉这条，ok = 看过）；
+   "开头胶带立着"和"放进框里"由用户在网页训练集质量页的"起止画面"里人工标（`dataset_labels.json` 的 `manual`：standing / basket 去掉这条，ok = 看过）；
    curate.py 自动计入这些标记（累计里的"人工"一步），不要替用户标，也不要打开 standing / place 自动规则代替人工。
    服务没开就用 `.claude/launch.json` 的 `dataset-viewer` 或 `PYTHONPATH=src python docs/workflows/dataset-viewer/server.py` 启动。
 5. 只有用户确认后才写 spec 或构建：

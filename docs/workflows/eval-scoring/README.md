@@ -84,3 +84,11 @@ command while it stays closed; release = command opens first. Tape hidden from t
 
 History: before 2026-10-23 trials were scored 0-5 with every stage after the first failure counted as 0, and
 smoothness was reported separately. HF `wwqcleverghost/eval-scores-v4-v5` holds those scores.
+
+## Optional: per-frame stage labels
+
+`score.stage_frames(state, action)` returns one label per frame: 0 reaching, 1 arm A holds, 2 both hold, 3 arm B holds,
+4 placed (B opened after its hold). Boundaries come from the same hold runs as the completion stages; an episode
+without a full handover keeps its last reached label to the end. Checked 2026-10-29 on v4-handover2-trimmed: labels never
+go backwards, and "reached 4" matches the place stage of `score()` on 50/50 episodes (also 50/50 on the v6-flow_h16_s8 eval).
+Not yet written into any dataset; what the labels are for is still open.

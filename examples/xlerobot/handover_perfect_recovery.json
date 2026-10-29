@@ -1,41 +1,4 @@
 [
-  {
-    "repo": "wwqcleverghost/v2-handover2",
-    "note": "drop 3, 4, 5, 32: tape put in the basket / off the visible table; 26: recording stops at the release",
-    "drop": [
-      3,
-      4,
-      5,
-      26,
-      32
-    ]
-  },
-  {
-    "repo": "wwqcleverghost/v1-handover1",
-    "note": "handover_perfect.json plus the regrasp episodes 2 4 10 16 21 45 of handover1, each kept only from just before the gripper reopens after the failed grasp (start_s), i.e. the recovery; for baseline-only ablations",
-    "drop": [
-      3,
-      6,
-      7,
-      8,
-      13,
-      15,
-      23,
-      30,
-      31,
-      36,
-      39,
-      46,
-      47,
-      49
-    ],
-    "start_s": {
-      "2": 15.2,
-      "4": 11.4,
-      "10": 14.1,
-      "16": 6.5,
-      "21": 19.2,
-      "45": 3.0
-    }
-  }
+ {"repo": "wwqcleverghost/v2-handover2", "note": "drop 3, 4, 5, 32: tape put in the basket / off the visible table; 26: recording stops at the release", "drop": [3, 4, 5, 26, 32], "range": {"7": [347, 507], "9": [325, 466]}},
+ {"repo": "wwqcleverghost/v1-handover1", "note": "handover_perfect.json plus the regrasp episodes 2 4 10 16 21 45 of handover1, each kept only from just before the gripper reopens after the failed grasp (start_s), i.e. the recovery; for baseline-only ablations", "drop": [3, 6, 7, 8, 13, 15, 23, 30, 31, 36, 39, 46, 47, 49], "start_s": {"2": 15.2, "4": 11.4, "10": 14.1, "16": 6.5, "21": 19.2, "45": 3.0}}
 ]

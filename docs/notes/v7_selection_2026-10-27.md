@@ -2,7 +2,7 @@
 
 中文: [v7_selection_2026-10-27.zh.md](v7_selection_2026-10-27.zh.md)
 
-`wwqcleverghost/v7-handover-clean`: 53 episodes (handover2 38 + handover1 15), 17-dim, local and on server1 only (`/media/data/wwq/data/v7-handover-clean`), not uploaded to HF.
+`wwqcleverghost/v7-handover-clean`: 53 episodes (handover2 38 + handover1 15), 17-dim. On HF (private) since 2026-10-29, revision `fee2b18a` (`images/` placeholder dirs not uploaded); also on server1 (`/media/data/wwq/data/v7-handover-clean`).
 Spec: `examples/xlerobot/v7_handover_clean.json`; per episode: [v7_selection_2026-10-27.csv](v7_selection_2026-10-27.csv) (column `v7`).
 Built at git `d0c28aca` (uncommitted changes in the tree) from `wwqcleverghost/v2-handover2` and `wwqcleverghost/v1-handover1` (local cache).
 
