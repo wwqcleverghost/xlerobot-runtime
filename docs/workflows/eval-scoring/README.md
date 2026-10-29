@@ -83,7 +83,7 @@ Gripper captions `L cmd/state`: 1 = closed; holding = command ~1-5 with state cl
 command while it stays closed; release = command opens first. Tape hidden from the head camera at grasp time is normal.
 
 History: before 2026-10-23 trials were scored 0-5 with every stage after the first failure counted as 0, and
-smoothness was reported separately. HF `wwqcleverghost/eval-scores-v4-v5` holds those scores.
+smoothness was reported separately. HF `wwqcleverghost/scores-v4-v5` holds those scores.
 
 ## Optional: per-frame stage labels
 

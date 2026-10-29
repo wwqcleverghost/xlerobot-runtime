@@ -67,7 +67,7 @@
  },
  {
   "repo": "local/v4-react_h32_k4_s8",
-  "root": "/home/wwq/.cache/huggingface/lerobot/wwqcleverghost/v4-react_h32_k4_s8/dataset",
+  "root": "/home/wwq/.cache/huggingface/lerobot/wwqcleverghost/eval-v4-react_h32_k4_s8/dataset",
   "note": "eval trial passing docs/workflows/eval-scoring/select_strict.py; built with --to_target",
   "drop": [
    0,
@@ -83,7 +83,7 @@
  },
  {
   "repo": "local/v4-react_h32_k8_s4",
-  "root": "/home/wwq/.cache/huggingface/lerobot/wwqcleverghost/v4-react_h32_k8_s4/dataset",
+  "root": "/home/wwq/.cache/huggingface/lerobot/wwqcleverghost/eval-v4-react_h32_k8_s4/dataset",
   "note": "eval trial passing docs/workflows/eval-scoring/select_strict.py; built with --to_target",
   "drop": [
    0,
@@ -98,7 +98,7 @@
  },
  {
   "repo": "local/v4-react_h48_k6_s8",
-  "root": "/home/wwq/.cache/huggingface/lerobot/wwqcleverghost/v4-react_h48_k6_s8",
+  "root": "/home/wwq/.cache/huggingface/lerobot/wwqcleverghost/eval-v4-react_h48_k6_s8",
   "note": "eval trial passing docs/workflows/eval-scoring/select_strict.py; built with --to_target",
   "drop": [
    0,

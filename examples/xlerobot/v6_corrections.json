@@ -1,8 +1,8 @@
 [
  {
-  "repo": "wwqcleverghost/v4-react_h32_k8_s4_takeover",
+  "repo": "wwqcleverghost/eval-v4-react_h32_k8_s4_takeover",
   "revision": "4ce05238da5ef87903d556a2e878d6372066f5b8",
-  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/v4-react_h32_k8_s4_takeover/set1/dataset",
+  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/eval-v4-react_h32_k8_s4_takeover/set1/dataset",
   "note": "human takeover corrections, cut from the takeover (old code: +0.5 s jump skipped) to the positioning done (align) or the grasp (hold start + 0.2 s); old takeover code: first 0.5 s after each takeover skipped (policy->leader jump)",
   "segments": {
    "0": [
@@ -56,9 +56,9 @@
   }
  },
  {
-  "repo": "wwqcleverghost/v4-react_h32_k8_s4_takeover",
+  "repo": "wwqcleverghost/eval-v4-react_h32_k8_s4_takeover",
   "revision": "4ce05238da5ef87903d556a2e878d6372066f5b8",
-  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/v4-react_h32_k8_s4_takeover/set2/dataset",
+  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/eval-v4-react_h32_k8_s4_takeover/set2/dataset",
   "note": "human takeover corrections, cut from the takeover (old code: +0.5 s jump skipped) to the positioning done (align) or the grasp (hold start + 0.2 s); old takeover code: first 0.5 s after each takeover skipped",
   "segments": {
    "3": [
@@ -82,9 +82,9 @@
   }
  },
  {
-  "repo": "wwqcleverghost/v4-react_h24_k6_s4_takeover",
+  "repo": "wwqcleverghost/eval-v4-react_h24_k6_s4_takeover",
   "revision": "f58938aa4a35e6a44f941d9b18569de08474c48d",
-  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/v4-react_h24_k6_s4_takeover/dataset",
+  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/eval-v4-react_h24_k6_s4_takeover/dataset",
   "note": "human takeover corrections, cut from the takeover (old code: +0.5 s jump skipped) to the positioning done (align) or the grasp (hold start + 0.2 s); eased takeover code; ep2 = two presses kept as reach + grasp pieces",
   "segments": {
    "2": [
@@ -96,9 +96,9 @@
   }
  },
  {
-  "repo": "wwqcleverghost/v4-react_h48_k6_s8_takeover",
+  "repo": "wwqcleverghost/eval-v4-react_h48_k6_s8_takeover",
   "revision": "d5e67c07bff785f35c895eccfb136800198c1eff",
-  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/v4-react_h48_k6_s8_takeover/dataset",
+  "root": "~/.cache/huggingface/lerobot/wwqcleverghost/eval-v4-react_h48_k6_s8_takeover/dataset",
   "note": "human takeover corrections, cut from the takeover (old code: +0.5 s jump skipped) to the positioning done (align) or the grasp (hold start + 0.2 s); eased takeover code; ep0 only the second press (the grasp)",
   "segments": {
    "0": [

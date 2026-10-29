@@ -28,9 +28,5 @@
    "force": "drop"
   }
  },
- "v2-handover2": {
-  "20": {
-   "force": "drop"
-  }
- }
+ "v2-handover2": {}
 }

@@ -22,6 +22,7 @@
 
 # 工作流程文档（做相关任务前先读对应的 README.md）
 
+- `docs/workflows/naming/` — 训练集 `v<N>-<内容>`、模型 `v<N>-<方法>_<参数>`、测试集 `eval-<模型名>`，上传和改名前先读。
 - `docs/workflows/eval-scoring/` — 评测打分：总分 = 0.5 完成度（分阶段通过率）+ 0.5 质量（抖动、用时、停顿 vs 人类），全部带置信区间，用 report.py 出表和图。
 - `docs/workflows/eval-grid-video/` — 把一次评测（10 个试次）合成 2x5 网格视频。
 - `docs/workflows/handover-dataset-curation/` — 检查、筛选、裁剪、合并交接数据集；含数据集质量检测标准（jerk、峰值速度、停顿）。

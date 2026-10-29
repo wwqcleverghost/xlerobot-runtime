@@ -74,7 +74,7 @@ PYTHONPATH=src:docs/workflows/eval-scoring:docs/workflows/handover-dataset-curat
 松手 = 指令先张开。抓取时头部相机看不到胶带是正常的。
 
 历史：2026-10-23 之前每个试次打 0–5 分，第一个失败阶段之后全部记 0，平滑度单独报告。
-那时的分数在 HF `wwqcleverghost/eval-scores-v4-v5`。
+那时的分数在 HF `wwqcleverghost/scores-v4-v5`。
 
 ## 可选：逐帧阶段标签
 
