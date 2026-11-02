@@ -3,11 +3,11 @@
 English: [v7_selection_2026-10-27.md](v7_selection_2026-10-27.md)
 
 `wwqcleverghost/v7-handover-clean`：53 条（handover2 38 + handover1 15），17 维。2026-10-29 已上传 HF（私有），revision `fee2b18a`（空的 `images/` 目录没传）；server1 上也有（`/media/data/wwq/data/v7-handover-clean`）。
-spec：`examples/xlerobot/v7_handover_clean.json`；逐条结果：[v7_selection_2026-10-27.csv](v7_selection_2026-10-27.csv)（`v7` 列）。
+spec：`examples/xlerobot/v7-handover-clean.json`；逐条结果：[v7_selection_2026-10-27.csv](v7_selection_2026-10-27.csv)（`v7` 列）。
 构建：git `d0c28aca`（工作区有未提交改动），来源 `wwqcleverghost/v2-handover2`、`wwqcleverghost/v1-handover1`（本地缓存）。
 
 ```bash
-PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --spec examples/xlerobot/v7_handover_clean.json --dst wwqcleverghost/v7-handover-clean --reset_tol 10
+PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --spec examples/xlerobot/v7-handover-clean.json --dst wwqcleverghost/v7-handover-clean --reset_tol 10
 ```
 
 用户要求（不再人工审阅）：去掉开头胶带立着的、最后放进框里的（和 v6 一样），质量按当前规则，约 50 条，太少就放宽。

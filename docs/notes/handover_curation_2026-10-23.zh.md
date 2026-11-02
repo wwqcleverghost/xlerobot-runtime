@@ -53,11 +53,11 @@ v5 里还有 3 条重抓，之前没发现：
 另外：`v4-react_h32_k8_s4` ep8 的人工标签是成功，但截图里 L 张着爪在胶带上方停了 19 秒、没抓，标签错了（自动阶段判 1/5 是对的）。
 
 ## 新数据集 `wwqcleverghost/handover-curated`（43 eps，12 维，只在本地，未上传）
-spec：`examples/xlerobot/handover_curated.json`，构建加 `--arm_only`（动作/状态只留 12 个手臂关节，和训练输入、评测数据一致）。
-构建：`PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/handover_curated.json --dst wwqcleverghost/handover-curated`。
+spec：`examples/xlerobot/v6-handover-curated.json`，构建加 `--arm_only`（动作/状态只留 12 个手臂关节，和训练输入、评测数据一致）。
+构建：`PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/v6-handover-curated.json --dst wwqcleverghost/handover-curated`。
 
 ## 旧版（已作废，未构建完）
-第一轮是 72 条 = `handover_perfect.json` 再去掉 h2 14、30 和 h1 18；停顿超过 1 秒的 h2 1、25 和 h1 29 当时还保留。
+第一轮是 72 条 = `v5-handover-perfect.json` 再去掉 h2 14、30 和 h1 18；停顿超过 1 秒的 h2 1、25 和 h1 29 当时还保留。
 
 ## 第三轮 = v6（用户 2026-10-23 最终要求）
 - 综合筛选：清单 keep，且没有任何极低项：`report.py` 平滑/速度/不停顿任一子分 <= 0.5（= 比人类差 2 倍），或动作 jerk

@@ -62,12 +62,12 @@ Also: `v4-react_h32_k8_s4` ep8 is labelled success, but on the sheets L hovers o
 the label is wrong (the auto stages' 1/5 is right).
 
 ## New dataset `wwqcleverghost/handover-curated` (43 eps, 12-dim, local only, not uploaded)
-Spec: `examples/xlerobot/handover_curated.json`, built with `--arm_only` (action/state keep only the 12 arm joints, like the
+Spec: `examples/xlerobot/v6-handover-curated.json`, built with `--arm_only` (action/state keep only the 12 arm joints, like the
 training input and the eval recordings).
-Build: `PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/handover_curated.json --dst wwqcleverghost/handover-curated`.
+Build: `PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/v6-handover-curated.json --dst wwqcleverghost/handover-curated`.
 
 ## Earlier version (superseded, never finished building)
-Round 1 was 72 episodes = `handover_perfect.json` minus h2 14, 30 and h1 18, still with the > 1 s pauses h2 1, 25, h1 29.
+Round 1 was 72 episodes = `v5-handover-perfect.json` minus h2 14, 30 and h1 18, still with the > 1 s pauses h2 1, 25, h1 29.
 
 ## Round 3 = v6 (user's final request, 2026-10-23)
 - Combined filter: checklist keep and no very low item: any `report.py` sub-score (smooth / speed / no idle) <= 0.5

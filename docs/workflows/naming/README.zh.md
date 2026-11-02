@@ -9,6 +9,7 @@
 |---|---|---|
 | 训练集（数据集） | `v<N>-<内容>` | `v7-handover-clean`、`v6-corrections`、`v6-handover-curated-corrx3` |
 | 模型 | `v<N>-<方法>_<参数>[_变体]` | `v7-flow_h16_s8`、`v6-flow_h16_s8_corrmix_4k` |
+| 中间数据集（裁剪后的原始录制，用来筛选，不直接训练；用完可删） | `raw-<内容>-trimmed` | `raw-handover12-trimmed` |
 | 测试集（真机评测录像，数据集） | `eval-<模型名>` | `eval-v6-flow_h16_s8`、`eval-v4-react_h32_k8_s4_takeover` |
 | 分数表 | `scores-<内容>` | `scores-v4-v5` |
 
@@ -19,6 +20,9 @@
 - 实验室电脑录制时本地仍叫 `eval_<模型>_<时间>`（给了 policy 时 lerobot 要求 `eval_` 前缀），上传时用 `eval-<模型>`。
 - 中间检查点放进模型仓库的 `checkpoints/<step>/`（加 `train.log`），不单独建仓库。
 - 记录用到的每个数据集的 revision（提交哈希），不要只写 `main`。
+
+- 从 2026-11-01 起只用手臂：录制的数据以及要和它们混在一起的数据集，动作 / 状态都是 12 维（只有双臂；构建加 `--arm_only`）。
+  这些任务里头部电机和底盘速度从不变化。`v1-handover1`、`v2-handover2`、`v7-handover-clean` 仍是 17 维。
 
 2026-10-30 改名：原来直接用模型名的 29 个测试集都加了 `eval-` 前缀；
 `v1-eval_records_20261001` → `eval-v1-records_20261001`，`d2_train_records_20261006` → `eval-v2-records_20261006`，

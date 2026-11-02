@@ -38,6 +38,7 @@ import report  # noqa: E402
 from make_grid import first_arm  # noqa: E402
 from review_page import NAMES, pauses, propose, snaps  # noqa: E402
 from score import GR, runs  # noqa: E402
+import stage_labels  # noqa: E402
 from trim_stagnant_frames import keep_range, reach_start  # noqa: E402
 sys.path.insert(0, str(HERE))
 import curate  # noqa: E402
@@ -67,6 +68,18 @@ def scan():
             rel = str(root.relative_to(OWNER))
             out.append(dict(id=re.sub(r"/dataset$", "", rel), root=root))
     return out
+
+
+# Raw recordings that are not DAgger runs (those are found by their interventions.csv). Add new recordings here.
+# ponytail: a hand-kept list; a recording flag in the dataset if this grows
+RAW = {"v1-handover1", "v2-handover2"}
+
+
+def role(ds_id, root):
+    """raw (recordings; the only ones the trim mode edits) / eval / built (made from others by a spec)."""
+    if ds_id in RAW or (root / "interventions.csv").exists():
+        return "raw"
+    return "eval" if is_eval(root) else "built"
 
 
 def is_eval(root):
@@ -130,7 +143,7 @@ def ds_list():
         info = json.load(open(d["root"] / "meta/info.json"))
         rec = build_record(d["id"])
         out.append(dict(id=d["id"], episodes=info["total_episodes"], frames=info["total_frames"], fps=info["fps"],
-                        dims=info["features"]["action"]["shape"][0], eval=is_eval(d["root"]), dagger=(d["root"] / "interventions.csv").exists(),
+                        dims=info["features"]["action"]["shape"][0], eval=is_eval(d["root"]), dagger=(d["root"] / "interventions.csv").exists(), role=role(d["id"], d["root"]),
                         revision=revision(d["root"]), building=is_busy,
                         built=rec and dict(git=rec["git"], started=rec["started"], spec=rec["spec"])))
     return out
@@ -192,6 +205,29 @@ def episodes(ds_id):
 def curves(ds_id, ep):
     a, s = ep_arrays(load(ds_id), ep)
     return dict(names=NAMES, action=np.round(a, 1).tolist(), state=np.round(s, 1).tolist())
+
+
+def tape_sizes(ds_id, ep):
+    """{'L', 'R'}: apparent tape diameter per frame in each wrist camera (stage_labels.video_sizes), cached per video file version."""
+    o = load(ds_id)
+    v, n = videos(ds_id, o, ep), len(ep_arrays(o, ep)[0])
+    out = {}
+    for k, cam in stage_labels.CAM.items():
+        assert cam in v, f"{ds_id} 没有 {cam} 相机"
+        mt = v[cam]["url"].rsplit("v=", 1)[-1]
+        p = OUT / "cache/tape" / f"{ds_id.replace('/', '__')}_{ep}_{cam}_{mt}_s{stage_labels.SIZE_VERSION}.npy"
+        if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            np.save(p, stage_labels.video_sizes(o["root"] / v[cam]["path"], v[cam]["t0"], n, o["fps"]))
+        out[k] = np.load(p)
+    return out
+
+
+def stages(ds_id, ep, rule):
+    """Auto stage labels of one episode (examples/xlerobot/stage_labels.py) as [(start, end, stage)] runs."""
+    a, s = ep_arrays(load(ds_id), ep)
+    names, fn, _, vision = stage_labels.RULES[rule]
+    return dict(names=names, segs=stage_labels.segments(fn(s, a, tape_sizes(ds_id, ep) if vision else None)))
 
 
 def decode_frame(ds_id, cam, ep, f):
@@ -263,6 +299,17 @@ def spec_path(name):
     return p
 
 
+def built(spec):
+    """A spec whose dataset was built is read-only: its sources carry "built" (the rebuild writes it)."""
+    return next((x["built"] for x in spec if x.get("built")), "")
+
+
+def draft(name):
+    spec = json.load(open(spec_path(name)))
+    assert not built(spec), f"{name} 已构建（{built(spec)}），只读；要改请另存为新名字"
+    return spec
+
+
 def spec_list():
     out = []
     for p in sorted(SPECS.glob("*.json")):
@@ -271,14 +318,8 @@ def spec_list():
         except ValueError:
             continue
         if isinstance(s, list) and s and all(isinstance(x, dict) and "repo" in x for x in s):
-            out.append(dict(name=p.name, sources=[ds_id_of(x) for x in s], segments=any("segments" in x for x in s)))
+            out.append(dict(name=p.name, sources=[ds_id_of(x) for x in s], segments=any("segments" in x for x in s), built=built(s)))
     return out
-
-
-def label_drop(lab):
-    """An episode the user dropped in the labels: forced drop, or a manual start / end mark (standing / basket) not forced kept.
-    Shared by the trim review (its "drop" button) and the curate rules, so both pages show the same decision."""
-    return lab.get("force") == "drop" or (lab.get("manual") in curate.MANUAL and lab.get("force") != "keep")
 
 
 def rule_eps(o, source, reset_tol, to_target, snap_rule):
@@ -338,7 +379,7 @@ def review(name, reset_tol, to_target, snap_rule):
             a, s = ep_arrays(o, r["ep"])
             r.update(ds=ds_id, repo=source["repo"], video=videos(ds_id, o, r["ep"]), label=lab,
                      q=range_q(a, s, *(rng.get(k) or (r["pfirst"], r["pend"]))),
-                     edit=dict(range=rng.get(k), cut=cut.get(k, []), drop=r["ep"] in drop or label_drop(lab)))
+                     edit=dict(range=rng.get(k), cut=cut.get(k, []), drop=r["ep"] in drop))
             out.append(r)
     return dict(spec=name, fps=30, episodes=out, sources=[dict(repo=s["repo"], ds=ds_id_of(s), dst=s.get("dst", "")) for s in spec],
                 rule=next((s["rule"] for s in spec if "rule" in s), None))
@@ -349,7 +390,7 @@ def edit_spec(name, ds, ep, edit, seg=None):
     seg = index of the segment in a segment source: its [a, b] goes into "segments", drop into "drop_seg"."""
     p, k = spec_path(name), str(ep)
     with lock:
-        spec = json.load(open(p))
+        spec = draft(name)
         orig = OUT / "spec_orig" / name
         if not orig.exists():  # first write ever: keep the hand-written version for "reset"
             orig.parent.mkdir(parents=True, exist_ok=True)
@@ -388,12 +429,6 @@ def edit_spec(name, ds, ep, edit, seg=None):
                 d.pop(k, None)
             if not d:
                 del src[key]
-        # the drop decision lives in the labels too (shared with the curate rules on the quality page)
-        lab = read_json(LABELS, {}).get(ds_id_of(src), {}).get(k, {})
-        if edit["drop"] and not label_drop(lab):
-            set_label(ds_id_of(src), ep, {"force": "drop"})
-        elif not edit["drop"] and label_drop(lab):
-            set_label(ds_id_of(src), ep, {"force": "", "manual": "" if lab.get("manual") in curate.MANUAL else lab.get("manual")})
         drop = set(src.get("drop", [])) - {ep} | ({ep} if edit["drop"] else set())
         if drop:
             src["drop"] = sorted(drop)
@@ -417,14 +452,12 @@ def freeze(name, rule):
     so the rebuild is exactly what the page shows whatever the CLI defaults are."""
     p = spec_path(name)
     with lock:
-        spec = json.load(open(p))
+        spec = draft(name)
         for source in spec:
             if "segments" in source:
                 continue
             o = load(ds_id_of(source))
             rng, drop = source.setdefault("range", {}), set(source.get("drop", []))
-            labels = read_json(LABELS, {}).get(ds_id_of(source), {})
-            drop |= {int(e) for e, lab in labels.items() if label_drop(lab)}
             for r in rule_eps(o, source, rule["reset_tol"], rule["to_target"], rule["snap_rule"]):
                 k = str(r["ep"])
                 if k not in rng:
@@ -448,13 +481,14 @@ def rebuild(name, rule, dsts, overwrite, arm_only):
         assert dst not in busy, f"{dst} is being built right now"
         groups.setdefault(dst, []).append(repo)
     spec = freeze(name, rule)
-    with lock:  # remember each source's dst in the spec
+    jobs, ts, git = [], time.strftime("%Y%m%d_%H%M%S"), git_info()
+    with lock:  # remember each source's dst in the spec; from now on it is read-only
         for s in spec:
             if s["repo"] in dsts:
                 s["dst"] = dsts[s["repo"]]
+            s["built"] = f"{ts} git {git['commit'][:8]}{' (dirty)' if git['dirty'] else ''}"
         write_json(spec_path(name), spec, spec=True)
     (OUT / "builds").mkdir(parents=True, exist_ok=True)
-    jobs, ts, git = [], time.strftime("%Y%m%d_%H%M%S"), git_info()
     for dst, repos in groups.items():
         if (OWNER / dst).exists():
             assert overwrite, f"{dst} exists (tick overwrite: the old copy is renamed, not deleted)"
@@ -669,7 +703,7 @@ def evaluation(ds_id):
 
 
 def version(ds_id):
-    m = re.match(r"v(\d+)-", ds_id)
+    m = re.match(r"(?:eval-)?v(\d+)-", ds_id)  # test sets carry an eval- prefix (naming README, 2026-10-30)
     return int(m[1]) if m else 0
 
 
@@ -729,16 +763,46 @@ def jsonable(x):
     return x
 
 
-def new_spec(ds_id):
-    """A trim spec for one dataset, to review it on the trim page."""
-    name = f"{ds_id.replace('/', '_')}_trim.json"
-    p = spec_path(name)
-    if not p.exists():
-        src = {"repo": f"wwqcleverghost/{ds_id.split('/')[0]}"}
-        if "/" in ds_id:
-            src["root"] = str(root_of(ds_id))
-        write_json(p, [src], spec=True)
-    return dict(name=name)
+def source_of(ds_id):
+    src = {"repo": f"wwqcleverghost/{ds_id.split('/')[0]}"}
+    if "/" in ds_id:
+        src["root"] = str(root_of(ds_id))
+    return src
+
+
+def new_spec(dst, ds_id):
+    """A draft trim spec of one raw recording, named after the dataset it will build."""
+    assert re.fullmatch(r"[A-Za-z0-9._-]+", dst), f"bad name {dst}"
+    p = spec_path(f"{dst}.json")
+    assert not p.exists(), f"{p.name} 已存在"
+    write_json(p, [source_of(ds_id)], spec=True)
+    return dict(name=p.name)
+
+
+def save_as(name, dst):
+    """Copy of a spec (e.g. a built, read-only one) as a new draft for another dataset."""
+    assert re.fullmatch(r"[A-Za-z0-9._-]+", dst), f"bad name {dst}"
+    p = spec_path(f"{dst}.json")
+    assert not p.exists(), f"{p.name} 已存在"
+    spec = json.load(open(spec_path(name)))
+    for x in spec:
+        x.pop("built", None); x.pop("dst", None)
+        x["note"] = f"copied from {name} on {time.strftime('%Y-%m-%d')}" + (f"; {x['note']}" if x.get("note") else "")
+    write_json(p, spec, spec=True)
+    return dict(name=p.name)
+
+
+def review_ds(ds_id):
+    """Review mode: every episode of one dataset, whole, read-only (labels only)."""
+    o, labels = load(ds_id), read_json(LABELS, {}).get(ds_id, {})
+    out = []
+    for ep in o["eps"].index:
+        a, s = ep_arrays(o, ep)
+        n = len(a)
+        out.append(dict(ep=int(ep), n=n, first=0, end=n, pfirst=0, pend=n, pdrop=False, snaps=snaps(a, s, 0, n), pauses=pauses(a, 0, n),
+                        arm=first_arm(a), q=range_q(a, s, 0, n), ds=ds_id, repo=source_of(ds_id)["repo"], video=videos(ds_id, o, int(ep)),
+                        label=labels.get(str(ep), {}), edit=dict(range=None, cut=[], drop=False)))
+    return dict(spec=None, fps=o["fps"], episodes=out, sources=[dict(repo=source_of(ds_id)["repo"], ds=ds_id, dst="")], rule=None)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -789,9 +853,12 @@ class Handler(BaseHTTPRequestHandler):
             "/api/datasets": lambda: dict(datasets=ds_list(), git=git_info()),
             "/api/episodes": lambda: episodes(q["id"]),
             "/api/curves": lambda: curves(q["id"], int(q["ep"])),
+            "/api/stages": lambda: stages(q["id"], int(q["ep"]), q["rule"]),
+            # std9 (the reference) stays on the command line (--compare); the page shows fine9, what training uses
+            "/api/stage_rules": lambda: {k: dict(names=v[0], desc=v[2], vision=v[3]) for k, v in stage_labels.RULES.items() if k != "std9"},
             "/api/specs": spec_list,
-            "/api/review": lambda: review(q["spec"], float(q.get("reset_tol", 10)), q.get("to_target") == "1",
-                                          q.get("snap_rule") == "1"),
+            "/api/review": lambda: review_ds(q["ds"]) if q.get("ds") else review(q["spec"], float(q.get("reset_tol", 10)),
+                                                                                  q.get("to_target") == "1", q.get("snap_rule") == "1"),
             "/api/builds": builds,
             "/api/quality": lambda: quality(q["id"]),
             "/api/eval": lambda: evaluation(q["id"]),
@@ -809,7 +876,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/label": lambda: set_label(b["id"], b["ep"], b["patch"]),  # ep or "<ep>.<segment>"
             "/api/review/edit": lambda: edit_spec(b["spec"], b["ds"], int(b["ep"]), b.get("edit"), b.get("seg")),
             "/api/rebuild": lambda: rebuild(b["spec"], b["rule"], b["dsts"], b.get("overwrite", False), b.get("arm_only", False)),
-            "/api/spec/new": lambda: new_spec(b["id"]),
+            "/api/spec/new": lambda: new_spec(b["dst"], b["id"]),
+            "/api/spec/saveas": lambda: save_as(b["spec"], b["dst"]),
             "/api/curate/run": lambda: curate_run(b["ids"], b["preset"]),
             "/api/curate/spec": lambda: dict(name=curate_spec(b["ids"], b["preset"], b["name"], b.get("preset_name", ""))),
             "/api/curate/preset": lambda: save_preset(b["name"], b["preset"]),
@@ -857,8 +925,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def selfcheck():
-    assert label_drop({"force": "drop"}) and label_drop({"manual": "basket"}) and not label_drop({"manual": "ok"})
-    assert not label_drop({"manual": "standing", "force": "keep"})
+    assert built([{"repo": "a"}, {"repo": "b", "built": "x"}]) == "x" and built([{"repo": "a"}]) == ""
+    assert role("v1-handover1", OUT) == "raw"
     assert jsonable({"a": float("nan"), "b": np.int64(3), "c": [np.float32(1.5)]}) == {"a": None, "b": 3, "c": [1.5]}
     # fail_time: left gripper holds the tape (command 1, state 8) frames 10-40, then drops it
     st, ac = np.zeros((100, 12)), np.zeros((100, 12))
@@ -867,6 +935,8 @@ def selfcheck():
     assert fail_time(st, ac, 30) == 40 - 15, fail_time(st, ac, 30)
     assert fail_time(np.zeros((200, 12)), np.zeros((200, 12)), 30) == 110
     assert version("v6-handover-curated") == 6 and version("v10-x") == 10 and version("handover2") == 0
+    assert version("eval-v4-flow_h16_s8") == 4 and version("scores-v4-v5") == 0
+    stage_labels.selfcheck()
 
 
 if __name__ == "__main__":

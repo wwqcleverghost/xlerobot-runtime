@@ -15,7 +15,7 @@ English: [takeover_corrections_2026-10-23.md](takeover_corrections_2026-10-23.md
 | `handover1` | `5b057e25` | 示教里抓失败后重抓 | 8 | 5 |
 
 生成方式：git `95d09d21` + 未提交的 `trim_stagnant_frames.py`（新增 `root`/`segments` 配置项），
-`PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/v6_corrections.json --dst wwqcleverghost/v6-corrections`。
+`PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/v6-corrections.json --dst wwqcleverghost/v6-corrections`。
 接管段的指标：[takeover_review_2026-10-23.csv](takeover_review_2026-10-23.csv)。人工标注不作为依据；每一段都按关节数据
 （score.py 的"夹住"规则）判断，再看前后的画面。
 

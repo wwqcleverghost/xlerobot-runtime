@@ -13,12 +13,12 @@ The defaults turn handover2 (37,551 frames) into 29,002 frames.
 
 --spec merges several datasets into one instead of --src: a JSON list of {"repo": ..., "drop": [episodes],
 "start_s": {"<episode>": seconds}}. "drop" leaves episodes out; "start_s" starts an episode that many seconds
-after its trimmed start (e.g. right after a failed grasp, to keep only the recovery). See handover_perfect.json.
+after its trimmed start (e.g. right after a failed grasp, to keep only the recovery). See v5-handover-perfect.json.
 "cut": {"<episode>": [[start, end], ...]} removes those frame ranges [start, end) (frame index within the source episode)
 from inside the kept range and joins the rest, e.g. to shorten a mid-episode pause where the arms stand still.
 "root" reads a local dataset directory instead of the HF cache. "segments": {"<episode>": [[start, end], ...]}
 keeps exactly those frame ranges [start, end) instead of trimming, each range as its own episode (e.g. human
-takeover corrections cut out of eval recordings, see takeover_corrections.json); "drop_seg": {"<episode>": [i, ...]}
+takeover corrections cut out of eval recordings, see takeover-corrections.json); "drop_seg": {"<episode>": [i, ...]}
 leaves out those segments (by index; the dataset viewer writes it).
 "range": {"<episode>": [first, end]} keeps exactly frames [first, end) of that episode instead of the head/tail rule
 (it replaces keep_range, --to_target and start_s there; "cut" still applies). The dataset viewer

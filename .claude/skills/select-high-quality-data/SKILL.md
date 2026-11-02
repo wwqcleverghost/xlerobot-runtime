@@ -24,7 +24,7 @@ description: Pick the high-quality episodes of XLeRobot handover datasets (drop 
 4. 交给用户：每条规则去掉了几条、最后剩多少；给出网页链接 `http://localhost:8770/#quality?ds=<id1>,<id2>`，
    让用户在网页上点开被去掉的条看视频、需要时强制保留 / 去掉（存在 `examples/xlerobot/dataset_labels.json` 的 `force`）。
    "开头胶带立着"和"放进框里"由用户在网页训练集质量页的"起止画面"里人工标（`dataset_labels.json` 的 `manual`：standing / basket 去掉这条，ok = 看过）；
-   curate.py 自动计入这些标记（累计里的"人工"一步），不要替用户标，也不要打开 standing / place 自动规则代替人工。
+   curate.py 自动计入这些标记（累计里的"人工"一步），不要替用户标，也不要打开 place 自动规则代替人工（"开头立着"的自动规则已去掉：不可靠）。
    服务没开就用 `.claude/launch.json` 的 `dataset-viewer` 或 `PYTHONPATH=src python docs/workflows/dataset-viewer/server.py` 启动。
 5. 只有用户确认后才写 spec 或构建：
    ```bash
@@ -44,7 +44,6 @@ description: Pick the high-quality episodes of XLeRobot handover datasets (drop 
 | `small_snap` | 从臂小卡顿：指令几乎不动、从臂一帧跳 >6 的帧数 >= 15 | 关 | **新指标，待用户确认** |
 | `stall` | 从臂卡住：指令在动、从臂连续 >=4 帧不动的次数 >= 8 | 关 | **新指标，待用户确认** |
 | `place` / `regrasp` / `midline` | 清单：末帧胶带 >= 500 像素 / 每只手闭合 <= 2 次 / 中线规则 | 关 | 已有规则，可选 |
-| `standing` | 清单：开头胶带立着（色块高/宽 >= 1.2） | 关 | **阈值待用户确认** |
 
 v6-handover1/2-trimmed 上的参考数（2026-10-27）：去掉突变和停顿后 71 / 100，再加抖动和 jerk 后 61，再开小卡顿和卡住后 56。
 

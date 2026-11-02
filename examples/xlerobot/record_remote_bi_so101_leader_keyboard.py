@@ -41,6 +41,9 @@ EPISODE_TIME_SEC = 60
 RESET_TIME_SEC = 30
 TASK_DESCRIPTION = "My task description"
 MAX_ARM_STEP_PER_FRAME = 3.0  # Normalized joint-position units per control frame.
+# Recording starts when a leader arm joint leaves its pose at the start of the episode by more than this
+# (same 2-unit threshold as the head rule of trim_stagnant_frames.py), so the operator's reaction time is not recorded.
+START_TOL = 2.0
 
 
 ARM_ACTION_MAP = {
@@ -156,6 +159,11 @@ def smooth_arm_action(
 #     return smoothed
 #
 
+def leader_moved(leader_arm: dict[str, float], ref: dict[str, float], tol: float) -> bool:
+    """True once any leader arm joint (grippers included) is more than tol away from its reference pose."""
+    return max(abs(leader_arm[k] - ref[k]) for k in ref) > tol
+
+
 def busy_wait(seconds: float) -> None:
     # Keep a more stable control rate on Windows/macOS, where time.sleep can be coarse.
     if platform.system() in {"Darwin", "Windows"}:
@@ -200,12 +208,20 @@ def record_loop(
     robot_action_processor,
     robot_observation_processor,
     max_arm_step_per_frame,
+    start_tol=None,
 ):
+    """Teleoperate for control_time_s; with a dataset, write one frame per step. With start_tol, frames are only
+    written once the leader moves (see START_TOL); the last still frame before that is kept as the first frame,
+    and control_time_s counts from there. Returns the number of frames written."""
     # One loop iteration corresponds to one recorded control step.
     timestamp = 0.0
     start_episode_t = time.perf_counter()
 
     prev_action = None
+    waiting = dataset is not None and start_tol is not None
+    ref_pose, still_frame, n_frames = None, None, 0
+    if waiting:
+        print("等待主臂开始动：动之前不录。")
 
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
@@ -230,6 +246,12 @@ def record_loop(
             leader_action = leader.get_action()
             pressed_keys = np.array(list(keyboard.get_action().keys()))
             base_action = robot._from_keyboard_to_base_action(pressed_keys) or {}
+            if waiting:
+                leader_arm = {
+                    k: float(v) for k, v in normalize_bi_leader_action(leader_action).items()
+                    if k.startswith(("left_arm_", "right_arm_")) and k.endswith(".pos")
+                }
+                ref_pose = ref_pose or leader_arm
             act = build_full_robot_action(
                 raw_leader_action=leader_action,
                 base_action=base_action,
@@ -261,7 +283,18 @@ def record_loop(
                 # Store the teleop action that corresponds to the current observation frame.
                 action_frame = build_dataset_frame(dataset.features, act_processed_teleop, prefix="action")
                 frame = {**observation_frame, **action_frame, "task": single_task}
-                dataset.add_frame(frame)
+                if waiting and not leader_moved(leader_arm, ref_pose, start_tol):
+                    still_frame = frame  # keep only the latest still frame until the leader moves
+                else:
+                    if waiting:
+                        waiting = False
+                        start_episode_t = time.perf_counter()  # the episode time counts from the first movement
+                        print("主臂开始动，开始录制。")
+                        if still_frame is not None:
+                            dataset.add_frame(still_frame)
+                            n_frames += 1
+                    dataset.add_frame(frame)
+                    n_frames += 1
 
             if display_data:
                 log_rerun_data(observation=obs_processed, action=sent_action)
@@ -285,7 +318,9 @@ def record_loop(
         # Run the loop close to the requested recording FPS.
         dt_s = time.perf_counter() - start_loop_t
         busy_wait(1 / fps - dt_s)
-        timestamp = time.perf_counter() - start_episode_t
+        timestamp = 0.0 if waiting else time.perf_counter() - start_episode_t
+
+    return n_frames
 
 
 def main():
@@ -305,6 +340,13 @@ def main():
         type=float,
         default=MAX_ARM_STEP_PER_FRAME,
         help="Maximum change per arm joint per frame in normalized position units (default: 3.0)",
+    )
+    parser.add_argument(
+        "--start_tol",
+        type=float,
+        default=START_TOL,
+        help="Start recording an episode only when a leader arm joint moves more than this from its start pose "
+        "(normalized units, default 2.0); 0 records from the first frame as before",
     )
     parser.add_argument("--repo_id", type=str, help="Dataset repository ID (required when recording)")
     parser.add_argument("--teleop_only", action="store_true", help="Practice teleoperation without saving a dataset")
@@ -442,7 +484,7 @@ def main():
                 log_say(round_prompt)
 
                 # Main recording phase: send teleop actions to the robot and write frames to the dataset.
-                record_loop(
+                n_frames = record_loop(
                     robot=robot,
                     leader=leader,
                     keyboard=keyboard,
@@ -456,7 +498,14 @@ def main():
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
                     max_arm_step_per_frame=args.max_arm_step_per_frame,
+                    start_tol=args.start_tol or None,
                 )
+                if n_frames == 0 and not events["stop_recording"]:
+                    # Ended (-> key) before the leader moved: nothing to save, record this round again.
+                    print("主臂还没动就结束了，没有数据，重录这一轮。")
+                    events["rerecord_episode"] = False
+                    dataset.clear_episode_buffer()
+                    continue
 
                 if not events["stop_recording"] and (
                     (recorded_episodes < args.num_episodes - 1) or events["rerecord_episode"]

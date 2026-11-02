@@ -1,12 +1,12 @@
 <!doctype html>
 <html lang="zh">
 <meta charset="utf-8">
-<title>数据集工具</title>
+<title>Dataset Studio</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;--s5:#e87ba4;--s6:#008300;--s7:#6250d6;--s8:#e34948;--bg:#f6f5f1;--card:#fff;--ink:#1b1b1a;--mute:#6b6a65;--line:#e1e0d9;--kept:#1baf7a;--cut:#b4b2a9;--snap:#e34948;--h:#2a78d6;
+:root{--s1:#2a78d6;--s2:#eb6834;--s3:#11998e;--s4:#7b52d6;--s5:#c48a00;--s6:#d6458a;--s7:#2e8b3a;--s8:#8a5a35;--s9:#4f5d75;--s10:#c0392b;--bg:#f6f5f1;--card:#fff;--ink:#1b1b1a;--mute:#6b6a65;--line:#e1e0d9;--kept:#1baf7a;--cut:#b4b2a9;--snap:#e34948;--h:#2a78d6;
   --pause:#eda100;--orange:#eb6834;--soft:#efeee9;--ok:#1baf7a;--bad:#e34948}
-@media (prefers-color-scheme:dark){:root{--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;--s7:#9085e9;--s8:#e66767;--bg:#151514;--card:#1f1f1d;--ink:#eeede8;--mute:#9a998f;--line:#33332f;--cut:#55544f;--soft:#2a2a27}}
+@media (prefers-color-scheme:dark){:root{--s1:#3987e5;--s2:#d95926;--s3:#14a89c;--s4:#8f6ae6;--s5:#c98500;--s6:#d55181;--s7:#2f9a3e;--s8:#9a6a42;--s9:#66748c;--s10:#d04a3c;--bg:#151514;--card:#1f1f1d;--ink:#eeede8;--mute:#9a998f;--line:#33332f;--cut:#55544f;--soft:#2a2a27}}
 *{box-sizing:border-box} html{scroll-padding-top:110px}
 body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 system-ui,sans-serif}
 button,select,input{font:inherit;color:inherit} button{cursor:pointer;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:2px 9px}
@@ -25,7 +25,7 @@ main{padding:12px 16px}
 .picker{position:relative} .picker>button{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pop{position:absolute;top:30px;left:0;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #0003;
   width:520px;max-width:92vw;max-height:70vh;overflow:auto;padding:8px}
-.pop input{width:100%;margin-bottom:6px} .pop .row{display:flex;gap:8px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer}
+.pop>input{width:100%;margin-bottom:6px} .pop .row{display:flex;gap:8px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer}
 .pop .row:hover{background:var(--soft)} .pop .row .mute{margin-left:auto;font-size:11px} .pop h4{margin:8px 4px 2px;font-size:11px;color:var(--mute)}
 /* player */
 .player{display:grid;grid-template-columns:1fr 1fr;gap:2px;width:320px;flex:none;background:var(--cut);border-radius:4px;overflow:hidden;position:relative}
@@ -35,7 +35,8 @@ main{padding:12px 16px}
 /* curves */
 .curves{position:relative;margin:4px 8px 0;touch-action:none;cursor:crosshair} .curves canvas{display:block;width:100%}
 .curves .ph,.bar .ph{position:absolute;top:-4px;bottom:-4px;width:2px;margin-left:-1px;background:var(--ink);left:0;pointer-events:none;z-index:3}
-.curves .chd{position:absolute;right:0;top:-2px;display:flex;gap:4px;z-index:4} .curves .chd button{font-size:11px;padding:0 6px}
+.curves{padding-top:22px} .curves .ph{top:18px} .curves.folded{padding-top:0}
+.curves .chd{position:absolute;right:0;top:0;display:flex;gap:4px;z-index:4} .curves .chd button{font-size:11px;padding:0 6px}
 .curves.folded{height:20px;cursor:default} .curves.folded canvas,.curves.folded .ph,.curves.folded .armsw{display:none}
 /* review cards */
 .cards{display:grid;gap:12px}
@@ -56,7 +57,12 @@ main{padding:12px 16px}
 .row{display:flex;gap:10px;align-items:flex-start} .strip{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
 figure{margin:0} figure img{display:block;border-radius:4px;background:var(--cut);width:160px;height:120px;cursor:pointer} figcaption{font-size:11px;color:var(--mute);width:160px}
 .card footer,.labeler{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center} .card footer input[data-note],.labeler input[data-note]{flex:1;min-width:140px}
-.tag{border-radius:10px;padding:0 8px;font-size:12px} .tag.on{background:var(--orange);border-color:var(--orange);color:#fff}
+.tag{border-radius:10px;padding:0 8px;font-size:12px}
+#count{display:inline-block;min-width:17em} html{scrollbar-gutter:stable} /* counts or a scrollbar coming and going never move the toolbar wrap */
+.tagw{position:relative;display:inline-flex;padding:10px 3px 0;margin:-10px -3px 0} /* hover zone: the tag + 3px aside (half the gap) + the x above */
+.tagx{position:absolute;top:1px;right:-3px;width:14px;height:14px;line-height:13px;text-align:center;border-radius:50%;font-style:normal;font-size:12px;
+  background:var(--ink);color:var(--card);opacity:0;pointer-events:none;cursor:pointer;transition:opacity .12s}
+.tagw:hover .tagx{opacity:.45;pointer-events:auto} .tagw .tagx:hover{opacity:.85} .tag.on{background:var(--orange);border-color:var(--orange);color:#fff}
 .chip{display:inline-block;border-radius:8px;padding:0 6px;font-size:11px;background:var(--soft);color:var(--ink);margin-right:3px}
 .chip.ok{background:var(--ok);color:#fff} .chip.bad{background:var(--bad);color:#fff}
 /* batch grid */
@@ -78,6 +84,7 @@ td:first-child,th:first-child{text-align:left} tr.click{cursor:pointer} tr.click
 .nm{display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom} tr.selrow td{background:var(--soft);font-weight:600} .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .rk .grid{stroke:var(--line)} .rk .axt{fill:var(--mute);font-size:11px} .rk .lbl{fill:var(--ink);font-size:11px} .rk .pt{stroke:var(--card);stroke-width:1.5}
 .rk .hit{fill:transparent;cursor:pointer} .lg{margin:6px 0} .chips button{margin-bottom:4px} table.fn td{border:0;padding:2px 8px}
+table.rt{width:100%} table.rt .pk{display:inline-block;min-width:2.2em;text-align:right;margin-right:4px;color:var(--mute)}
 table.rt td,table.rt th{text-align:left;vertical-align:top;white-space:normal} table.rt .help{font-size:11px;max-width:560px}
 table.rt td:nth-child(3){white-space:nowrap} table.rt td:nth-child(2){min-width:280px} table.rt select{max-width:190px} table.rt td:nth-child(4),table.rt th{white-space:nowrap}
 .segs{display:inline-flex} .segs button{border-radius:0;margin-left:-1px} .segs button:first-child{border-radius:6px 0 0 6px} .segs button:last-child{border-radius:0 6px 6px 0}
@@ -102,6 +109,7 @@ dialog::backdrop{background:#0007} dialog .player{width:min(440px,100%)} dialog>
   <div class="bar1">
     <nav class="tabs"><a href="#review">裁剪审阅</a><a href="#batch">批量播放</a><a href="#quality">训练集质量 / 筛选</a><a href="#eval">测试集打分</a></nav>
     <label title="所有视频的播放速度（快捷键 &lt; &gt;）">速度 <select id="rate"></select></label>
+    <label title="自动阶段标签（examples/xlerobot/stage_labels.py），画在关节曲线上方">阶段 <select id="stage"></select></label>
     <div class="picker" id="picker"></div>
     <span id="info"></span>
     <span id="status"></span>

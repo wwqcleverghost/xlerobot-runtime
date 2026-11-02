@@ -35,9 +35,5 @@
  },
  "midline": {
   "on": false
- },
- "standing": {
-  "on": false,
-  "r": 1.2
  }
 }

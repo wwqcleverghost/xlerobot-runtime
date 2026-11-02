@@ -6,8 +6,8 @@ English: [README.md](README.md)
 `--spec examples/xlerobot/<spec>.json --dst wwqcleverghost/<name>`，spec 是
 `{"repo", "note", "drop": [episodes], "start_s": {"<ep>": 相对裁剪后起点的秒数}}` 组成的列表。它会重新编码视频
 （75 个 episode 约 30 分钟，笔记本 lerobot 环境，`PYTHONPATH=src`）；要脱离终端运行（`setsid -f`），
-笔记本曾在构建中途重启过。已有 spec：`handover_perfect.json`（75 eps）、
-`handover_perfect_strict.json`（64）、`handover_perfect_recovery.json`（81）。
+笔记本曾在构建中途重启过。已有 spec：`v5-handover-perfect.json`（75 eps）、
+`v5-handover-perfect-strict.json`（64）、`v5-handover-perfect-recovery.json`（81）。
 
 裁剪规则（用户定的）：只裁掉开头和结尾的空闲帧，保留 episode 中间的停顿。任务起点判断标准是手臂指令偏离起始姿态
 超过 2°，忽略第 0–1 帧的录制抖动和头部舵机。

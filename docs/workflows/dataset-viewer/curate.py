@@ -3,8 +3,10 @@
 The web page (#curate in server.py) and this command line use the same functions. Metrics come from the existing rule
 scripts where they exist: snaps / pauses (review_page.py), small back-and-forth (smooth.ep_metrics, as report.py),
 follower jerk (lerobot_dataset_quality.episode_metrics), gripper closes / tape pixels (ep_score.py), midline rule and
-500 tape pixels (select_strict.py). small_snap, stall and the standing threshold are new (2026-10-27) and still need the
+500 tape pixels (select_strict.py). small_snap and stall are new (2026-10-27) and still need the
 user's OK. Presets: docs/workflows/dataset-viewer/presets/<name>.json. Forced keep / drop: "force" in dataset_labels.json.
+No automatic "tape standing at the start" rule: the colour-blob height/width test was unreliable (user, 2026-10-30);
+standing is only marked by hand on the start / end frame review.
 
 usage: PYTHONPATH=src python docs/workflows/dataset-viewer/curate.py --datasets raw-handover-20260929-trimmed raw-handover-20261001-trimmed \\
          [--preset default] [--set jerk.x=2 --set stall.on=1 ...] [--report out.csv] [--spec <name>] [--build <dst> [--arm_only]]
@@ -41,8 +43,6 @@ RULES = [
          help="ep_score.py closes()；2/2 是干净的"),
     dict(key="midline", short="中线", label="清单：先抓的手臂符合中线规则（L x<=0.49，R x>=0.51）", params={}, on=False,
          help="首帧胶带位置 + 第一次抓住的手臂（select_strict.py）"),
-    dict(key="standing", short="立着", label="清单：开头胶带立着（色块高/宽 >= r）", params={"r": 1.2}, on=False, new=True,
-         help="ep_score.py 的 hw_start；清单说开头立着要丢，但没有定数值阈值，1.2 待用户看图确认"),
 ]
 DEFAULT = {r["key"]: {"on": r["on"], **r["params"]} for r in RULES}
 
@@ -114,8 +114,6 @@ def failed(m, p, refs, only=None):
     if on("midline") and not ((m["first_arm"] == "L" and x is not None and x <= 0.49) or
                               (m["first_arm"] == "R" and x is not None and x >= 0.51)):
         why["midline"] = f"{m['first_arm'] or '-'} 臂、胶带 x={x}"
-    if on("standing") and (m.get("hw_start") or 0) >= p["standing"]["r"]:
-        why["standing"] = f"开头色块高/宽 {m['hw_start']}"
     return why
 
 

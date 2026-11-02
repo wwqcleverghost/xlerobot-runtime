@@ -15,7 +15,7 @@ from 4 real-robot eval sets plus 5 regrasp recoveries cut out of the original ha
 | `handover1` | `5b057e25` | regrasp after a failed grasp in a demo | 8 | 5 |
 
 Build: git `95d09d21` + uncommitted `trim_stagnant_frames.py` (`root`/`segments` spec keys),
-`PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/v6_corrections.json --dst wwqcleverghost/v6-corrections`.
+`PYTHONPATH=src python examples/xlerobot/trim_stagnant_frames.py --arm_only --spec examples/xlerobot/v6-corrections.json --dst wwqcleverghost/v6-corrections`.
 Per-span takeover metrics: [takeover_review_2026-10-23.csv](takeover_review_2026-10-23.csv). Human labels were not
 trusted; every span was judged from proprioception (score.py hold rule) plus frames around it.
 

@@ -24,9 +24,26 @@ shows once it has seeked, so loading, switching episodes and looping never flash
 
 ## 1. Trim review (`#review`)
 
-Pick a spec (`examples/xlerobot/*.json`); "新建 spec…" (new spec) creates `examples/xlerobot/<name>_trim.json` for
-any dataset. One card per episode, with everything `review_page.py` had.
-Segment specs (`"segments"`, e.g. `takeover_corrections.json` = 15 segments cut from the 4 human-takeover recordings, `v6_corrections.json` = 20, `takeover_raw_segments.json` = all 39 raw takeover segments) get one
+Pick a dataset at the top, in three groups: **raw recordings** (`v1-handover1`, `v2-handover2` and the human-takeover / DAgger
+recordings that have `interventions.csv`; add new raw recordings to `RAW` in `server.py`), **built datasets**, **evals**. One card per
+episode, in **review mode** by default: watch and label only, no data is changed.
+
+**Labels only describe the episode itself** (note, tags, the start / end frame marks "standing at the start" / "in the basket"); they are
+stored in `examples/xlerobot/dataset_labels.json` by dataset and episode index and saved on click; a label never drops an episode by
+itself. "通过 / 有问题" (OK / problem) was removed (2026-10-30).
+
+**Trim mode** (button "裁剪" or key T) is only available for raw recordings. Trimming works through a spec: a spec is a set of operations
+(sources + which episodes to drop + the kept range of each + the cuts) that **belongs to the dataset it builds**, and its file name is that
+dataset's name: `examples/xlerobot/<dataset to build>.json`. "生成" (builds) lists every spec that uses this recording:
+
+- **草稿 (draft)**: not built yet, editable. "新建…" (new) asks for the name of the dataset to build and creates a draft with this recording.
+- **已构建 · 只读 (built, read-only)**: the spec has `"built"` (written by the build: time + git commit); the server refuses edits. To change
+  it, "另存为…" (save as) a draft under a new name. Specs built before 2026-10-30 were renamed after their datasets and marked `"built"` by
+  hand (`v5-handover-perfect*.json`, `v6-handover-curated.json`, `v6-corrections.json`, `takeover-corrections.json`, `v7-handover-clean.json`;
+  `v6_trim_all.json` built the two `raw-handover-*-trimmed`, since deleted).
+
+The rest of this section is the trim mode.
+Segment specs (`"segments"`, e.g. `takeover-corrections.json` = 15 segments cut from the 4 human-takeover recordings, `v6-corrections.json` = 20, `takeover_raw_segments.json` = all 39 raw takeover segments) get one
 card per segment: the blue handles move the segment's start / end (written back into `segments`), "这段不要" (drop this segment)
 writes its index into `"drop_seg": {"<ep>": [i]}`, which `trim_stagnant_frames.py` skips; no cuts; labels are keyed `"<ep>.<i>"`.
 The thin frame is the segment as first written. "排序" (sort) defaults to the quality score, high to low: `report.py`'s quality
@@ -39,10 +56,9 @@ where the kept part is a whole task, so takeover segments are scored on smooth +
 - Hold and drag on the timeline = scrub: playback pauses and the picture follows the pointer; on release it plays on from there; a click plays from there.
 - Drag the blue start / end handles (the video jumps to that frame while dragging); add a cut; click a cut or its orange handle to select it,
   then Delete / Backspace removes it (narrow cuts can be selected too).
-- Drop the episode, reset (back to the spec as it was before the first write + the current rule), OK / problem / note / tags, export JSON.
-  "Drop" here and "force drop" / the manual marks on the training-set quality page are one decision: both live in `dataset_labels.json`
-  (`force` / `manual`) and each page shows the other's; a rebuild writes these dropped episodes into the spec's `drop` too.
-- Rule parameters: tail tolerance `reset_tol` (v6 default 10), `--to_target`, snap rule. The rule functions are called directly:
+- Drop the episode (written only into the spec's `drop`, not into the labels), reset (back to the spec as it was before the first write +
+  the current rule), export JSON.
+- Rule parameter: tail tolerance `reset_tol` (v6 default 10). The `--to_target` and snap-rule switches were removed (2026-10-30, user: not useful). The rule functions are called directly:
   `keep_range` / `reach_start` from `trim_stagnant_frames.py`, `snaps` / `pauses` / `propose` from `review_page.py`, nothing is rewritten.
   Changing them only affects episodes without a fixed range in the spec.
 - Joint curves under the video: one row per joint of the grasping arm (6), solid = follower `observation.state`, dashed = leader command
@@ -57,14 +73,15 @@ where the kept part is a whole task, so takeover segments are scored on smooth +
 - Cuts go into the spec file itself (in git): `drop`, `cut`, and the exact kept range of an episode `"range": {"<ep>": [first, end]}`
   (with it `trim_stagnant_frames.py` skips the head/tail rule, `--to_target` and `start_s` for that episode; `cut` still applies; the script
   self-checks it). Before the first write the original spec is copied to `outputs/dataset_viewer/spec_orig/`, which "reset" uses.
-- OK / problem, notes and tags go into `examples/xlerobot/dataset_labels.json` (in git), by dataset directory name and episode index,
+- Notes and tags go into `examples/xlerobot/dataset_labels.json` (in git), by dataset directory name and episode index,
   shared by all four pages.
 - Browser localStorage only keeps UI preferences (last spec, selected datasets, folded curves, cell width).
 
-### Rebuild with the edits
+### Build the dataset
 
-"按修改重建数据集…" (rebuild) first writes every episode's exact range into the spec's `range` (edited ones keep theirs, the rest get the
-current rule; drops suggested by the snap rule go into `drop`), the rule parameters into `rule` and the target name into `dst`, then runs
+"构建数据集…" (build; drafts only) first writes every episode's exact range into the spec's `range` (edited ones keep theirs, the rest get the
+current rule), the rule parameters into `rule`, the target name (default = the spec's name) into `dst` and the build time + git commit into
+`built` (read-only from then on), then runs
 `trim_stagnant_frames.py --spec outputs/dataset_viewer/builds/<time>_<target>.spec.json --dst wwqcleverghost/<target>` in the background
 (`setsid`) for every target. Sources with the same target name are merged into one dataset. An existing target needs the overwrite box;
 the old copy is renamed to `<target>.old_<time>`, not deleted; a target that is being built cannot be started again.
@@ -81,7 +98,7 @@ three cameras + joint curves + labels, A / D to move.
 
 ## 3. Training-set quality (`#quality`)
 
-- **History table**: every training / demo dataset (v1–v6 and the early ones without a version prefix); each column is the dataset's median
+- **History table**: every training / demo dataset (newest version first); each column is the dataset's median
   over episodes: duration, median / p95 jerk, peak velocity, static fraction, longest pause, small back-and-forth rate; quality score with
   95% CI; number of IQR-flagged episodes. Click a row to add / remove it from the comparison (at most 8).
 - **Rank distribution**: pick a metric; one line per dataset (x = rank inside the dataset, small to large), the colour stays with the dataset;
@@ -107,7 +124,6 @@ episode. Click a row to watch it with the joint curves (A / D to move); the butt
 | Follower small snap | frames where the command barely moves (all 10 non-gripper joints \|Δaction\| < 2) but a follower joint jumps > 6; >= 15. **New metric, waiting for the user's OK** | off |
 | Follower stall | the command moves (max \|Δaction\| > 1) while the follower stands still (max \|Δstate\| < 0.3) for >= 4 frames in a row counts once; >= 8. **New metric, waiting for the user's OK** | off |
 | Checklist: placement / regrasp / midline | tape >= 500 yellow pixels in the last head frame / <= 2 gripper closes per arm / first holding arm follows the midline rule (`ep_score.py`, `select_strict.py`) | off |
-| Checklist: tape standing at the start | height / width of the tape blob in the first frame >= 1.2. The checklist has no number for it: **threshold waiting for the user's OK** | off |
 
 The jerk reference is the trimmed handover2 (`v4-handover2-trimmed`). The raw `handover2` contains the still head and tail, its median is
 only 14172, and with it as the reference many more episodes go (48 left of v6-handover1/2-trimmed instead of 61).
@@ -124,8 +140,9 @@ small snaps and stalls on as well.
   in the basket, fine; keys 1 / 2 / 3, A / D or the arrow keys to move, it moves on after a mark, pressing again removes the mark.
   Marks go into `manual` in `dataset_labels.json` (`standing` / `basket` / `ok`): the first two drop the episode (reason "人工：开头立着 /
   放进框里", the last step "manual" of the cumulative counts); "fine" only records it as seen (dimmed). Show only the unseen ones or only
-  those with a hint (0 tape pixels in the last frame: "maybe in the basket"; tape blob height / width >= the threshold at the start: "maybe
-  standing"; hints only, nothing is dropped automatically, the automatic rules standing / place stay off by default).
+  those with a hint (0 tape pixels in the last frame: "maybe in the basket"; a hint only, nothing is dropped automatically, the automatic
+  rule place is off by default). The automatic "tape standing at the start" rule (blob height / width in the first frame) was unreliable and
+  was removed at the user's request (2026-10-30); standing is only marked by hand here.
   The manual marks go through the same `curate.py` computation, so the command line gives the same result as the page.
 - **Presets**: a set of switches and thresholds saved as `presets/<name>.json` (in git), switched and saved from the page. The default
   preset `default.json` is the table above.
@@ -162,9 +179,18 @@ script (report.py, score.py, smooth.py, lerobot_dataset_quality.py) change. The 
 computes what is missing (about 1 minute for all) and the table fills in as it goes; after that it opens in under a second.
 Bump `SCORE_VERSION` when `_quality` / `_evaluation` in `server.py` change what they return.
 
+## Auto stage labels (top bar "阶段")
+
+A select in the top bar draws per-frame task stages as a colored band above every set of joint curves (review cards and the episode
+pop-up on every page); hover the band for the stage name and its time range. The stage definitions, rules and their accuracy are in
+[`../stage-labels/README.md`](../stage-labels/README.md); the code is [`examples/xlerobot/stage_labels.py`](../../../examples/xlerobot/stage_labels.py).
+The select offers `fine9` (causal, what the robot can compute live, the labels training uses) and `eval5` (eval scoring); the reference
+`std9` is only on the command line, for checking (`--compare`). `fine9` measures the tape in the wrist cameras: the first time an episode is shown it decodes both wrist videos (about 6 s),
+cached in `outputs/dataset_viewer/cache/tape/`.
+
 ## Files
 
-- `server.py`: server and JSON API (`/api/datasets`, `episodes`, `curves`, `frame`, `review`, `review/edit`, `label`, `rebuild`, `builds`,
+- `server.py`: server and JSON API (`/api/datasets`, `episodes`, `curves`, `stages`, `stage_rules`, `frame`, `review`, `review/edit`, `label`, `rebuild`, `builds`,
   `quality`, `eval`, `history`, `curate/*`, plus `/video`). `python server.py` runs its self-check first.
 - `index.html`: top bar and styles; `app.js`: the four pages (old `#curate` links open the training-set quality page).
 - `curate.py`: curate metrics, conditions and command line; `presets/`: curate presets (in git).

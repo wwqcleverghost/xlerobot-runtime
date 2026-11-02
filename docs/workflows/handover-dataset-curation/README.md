@@ -6,8 +6,8 @@ Tool: `examples/xlerobot/trim_stagnant_frames.py`. Single source: `--src <repo> 
 `--spec examples/xlerobot/<spec>.json --dst wwqcleverghost/<name>`, spec = list of
 `{"repo", "note", "drop": [episodes], "start_s": {"<ep>": seconds after the trimmed start}}`. It re-encodes
 videos (~30 min for 75 episodes, laptop lerobot env with `PYTHONPATH=src`); run it detached (`setsid -f`),
-the laptop has rebooted mid-build before. Existing specs: `handover_perfect.json` (75 eps),
-`handover_perfect_strict.json` (64), `handover_perfect_recovery.json` (81).
+the laptop has rebooted mid-build before. Existing specs: `v5-handover-perfect.json` (75 eps),
+`v5-handover-perfect-strict.json` (64), `v5-handover-perfect-recovery.json` (81).
 
 Trim rule (the user's): cut only the idle head and tail, keep pauses inside episodes. Task start is judged by
 the arm command leaving the start pose by > 2 deg, ignoring the frame 0-1 recording jitter and head servos.
