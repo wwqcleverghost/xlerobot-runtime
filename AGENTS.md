@@ -28,3 +28,6 @@
 - `docs/workflows/handover-dataset-curation/` — 检查、筛选、裁剪、合并交接数据集；含数据集质量检测标准（jerk、峰值速度、停顿）。
 - `docs/workflows/lab-training-queue/` — 在实验室服务器上启动、排队、续训、监控训练。
 - `docs/workflows/dataset-viewer/` — 本地数据集网页工具：裁剪审阅/微调并重建、批量播放、训练集质量、测试集打分（含历史对比）、筛选高质量数据（curate.py，网页"训练集质量 / 筛选"页；给 agent 的步骤见 `.claude/skills/select-high-quality-data/SKILL.md`）。
+- `docs/workflows/stage-labels/` — 逐帧阶段标签（9 阶段：A前往…复位）：事件定义、`fine9`（训练输入）/ `std9`（核对）、阈值和准确度；改阶段规则或用阶段做模型输入前先读。
+  - 用 `*-stagelabel` 数据集训练的模型有输入 `observation.environment_state`：真机评测（`lerobot_record_eval.py`、`eval_remote_trials.py`）会**自动**开启实时阶段计算，启动时打印 `Stage input on`，需要两路腕部相机；没打印就是没开。
+  - 改了 `examples/xlerobot/stage_labels.py` 的规则，已加过标签的数据集要用 `add_stage_labels.py --dataset <名字>-stagelabel` 重新计算，否则训练标签和评测时算的不一致。

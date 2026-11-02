@@ -1,6 +1,8 @@
 """Regression checks for evaluation keyboard phases, result saving, and resume."""
 
 import csv
+
+import numpy as np
 import json
 import tempfile
 import unittest
@@ -332,3 +334,21 @@ class EvaluationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StageInputTests(unittest.TestCase):
+    def test_stage_input_follows_the_policy_inputs(self):
+        from lerobot.configs.types import FeatureType, PolicyFeature
+        from lerobot.utils.constants import OBS_ENV_STATE
+
+        plain = SimpleNamespace(config=SimpleNamespace(input_features={}))
+        self.assertIsNone(evaluation.live_stage(plain))
+        self.assertIsNone(evaluation.live_stage(None))
+        staged = SimpleNamespace(config=SimpleNamespace(
+            input_features={OBS_ENV_STATE: PolicyFeature(type=FeatureType.ENV, shape=(9,))}))
+        stage = evaluation.live_stage(staged)
+        joints = {k: 0.0 for k in stage.JOINTS}
+        cams = {"left_wrist": np.zeros((120, 160, 3), np.uint8), "right_wrist": np.zeros((120, 160, 3), np.uint8)}
+        out = stage({**joints, **cams}, None)
+        self.assertEqual(out.shape, (9,))
+        self.assertEqual(out.argmax(), 0)  # nothing happened yet: A前往

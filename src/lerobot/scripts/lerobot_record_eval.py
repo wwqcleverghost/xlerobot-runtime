@@ -24,6 +24,8 @@ Differences from lerobot-record (only when --policy is set and no --teleop):
     --resume=true continues from the saved episode count; num_episodes is the target total.
   - Reset pose = median first-frame observation.state (.pos joints) of --reset_dataset
     (default: the dataset in the policy's train_config.json); base velocities are held at 0.
+  - A policy trained on a *-stagelabel dataset (input observation.environment_state) gets the live task stage every frame,
+    turned on automatically ("Stage input on" at startup; needs the wrist cameras). See docs/workflows/stage-labels.
 
 Example (XLerobot, host already running on the robot):
 ```shell
@@ -175,7 +177,7 @@ from lerobot.teleoperators import (  # noqa: F401
     xlebi_so101_leader,
 )
 from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop
-from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STATE, OBS_STR
+from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_ENV_STATE, OBS_STATE, OBS_STR
 from lerobot.utils.control_utils import (
     ask_success,
     is_headless,
@@ -375,6 +377,10 @@ def record_loop(
         postprocessor.reset()
 
     prev_sent = None  # [eval] last command sent, for max_arm_step smoothing
+    # [eval] stage input: a policy trained with observation.environment_state (docs/workflows/stage-labels) gets the live
+    # fine9 stage each frame; it is turned on by the policy's inputs, not by a flag, and is fed to the policy only (not recorded)
+    stage = live_stage(policy)
+    last_cmd, stage_now = None, None
     raw_hist = []  # [eval] previous two policy outputs, for smooth_arm_action
     state_range = train_state_range(preprocessor)
     events["takeover"] = False
@@ -398,6 +404,8 @@ def record_loop(
 
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
+        if stage is not None:  # [eval] every frame, takeover frames too, so the stage is current when the policy resumes
+            stage_now = stage(obs, last_cmd)
 
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
@@ -441,8 +449,11 @@ def record_loop(
             act_processed_teleop = teleop_action_processor((command, obs))
             act_processed_policy = None
         elif policy is not None and preprocessor is not None and postprocessor is not None:
+            policy_obs = clip_state(observation_frame, state_range)
+            if stage is not None:
+                policy_obs = {**policy_obs, OBS_ENV_STATE: stage_now}
             action_values = predict_action(
-                observation=clip_state(observation_frame, state_range),
+                observation=policy_obs,
                 policy=policy,
                 device=get_safe_torch_device(policy.config.device),
                 preprocessor=preprocessor,
@@ -513,6 +524,7 @@ def record_loop(
             robot_action_to_send.update({k: 0.0 for k in BASE_STOP if k in robot.action_features})
 
         sent_action = robot.send_action(robot_action_to_send)
+        last_cmd = dict(sent_action if sent_action is not None else robot_action_to_send)
 
         # Write to dataset
         if dataset is not None:
@@ -538,6 +550,22 @@ def record_loop(
 
 
 BASE_STOP = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
+
+
+def live_stage(policy):
+    """stage_labels.LiveStage when the policy takes observation.environment_state (trained on a *-stagelabel dataset),
+    else None. Needs the wrist cameras 'left_wrist' / 'right_wrist' in the robot observation."""
+    if policy is None or OBS_ENV_STATE not in (getattr(policy.config, "input_features", None) or {}):
+        return None
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples/xlerobot"))
+    from stage_labels import STAGES, LiveStage
+
+    shape = policy.config.input_features[OBS_ENV_STATE].shape
+    assert tuple(shape) == (len(STAGES),), f"{OBS_ENV_STATE} has shape {shape}, stage labels have {len(STAGES)}"
+    print(f"Stage input on: {OBS_ENV_STATE} = live fine9 stage ({len(STAGES)} one-hot, docs/workflows/stage-labels)")
+    return LiveStage()
 
 
 def train_state_range(preprocessor) -> tuple[np.ndarray, np.ndarray] | None:

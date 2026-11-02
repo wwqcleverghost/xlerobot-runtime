@@ -27,11 +27,13 @@ import numpy as np
 import pandas as pd
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.datasets.factory import drop_feature_names
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 from lerobot.policies.utils import make_robot_action
 from lerobot.robots.xlerobot.xlerobot_client import XLerobotClient, XLerobotClientConfig
-from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
+from lerobot.scripts.lerobot_record_eval import live_stage
+from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_ENV_STATE, OBS_STR
 from lerobot.utils.control_utils import ask_success, init_keyboard_listener, predict_action
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import get_safe_torch_device
@@ -70,11 +72,14 @@ def run_episode(robot, policy, preprocessor, postprocessor, features, device, ev
     preprocessor.reset()
     postprocessor.reset()
     action_sent = None
+    stage = live_stage(policy)  # stage input when the policy was trained on a *-stagelabel dataset (docs/workflows/stage-labels)
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < args.duration_s and not events["exit_early"]:
         t = time.perf_counter()
         obs = robot.get_observation()
         frame = build_dataset_frame(features, obs, prefix=OBS_STR)
+        if stage is not None:
+            frame[OBS_ENV_STATE] = stage(obs, action_sent)
         out = predict_action(
             frame, policy, device, preprocessor, postprocessor,
             policy.config.use_amp, task=args.task, robot_type=robot.robot_type,
@@ -109,9 +114,8 @@ def main():
     p.add_argument("--reset_speed", type=float, default=20.0, help="Reset speed, joint units per second")
     args = p.parse_args()
 
-    train_repo_id = json.loads(
-        (Path(args.policy_path) / "train_config.json").read_text()
-    )["dataset"]["repo_id"]
+    train_data = json.loads((Path(args.policy_path) / "train_config.json").read_text())["dataset"]
+    train_repo_id = train_data["repo_id"]
     repo_id = args.dataset_repo_id or train_repo_id
     reset_pose = dataset_start_pose(repo_id)
     if args.task is None:
@@ -126,6 +130,8 @@ def main():
         **hw_to_dataset_features(robot.action_features, ACTION),
         **hw_to_dataset_features(robot.observation_features, OBS_STR),
     }
+    # the state/action entries the policy was trained without (head servos, base), as lerobot_record_eval does
+    drop_feature_names(features, train_data.get("drop_names", []))
 
     cfg = PreTrainedConfig.from_pretrained(args.policy_path)
     if args.temporal_ensemble is not None:
