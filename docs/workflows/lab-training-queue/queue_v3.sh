@@ -26,9 +26,9 @@
 #                        final one and starts as soon as that checkpoint is saved: <base>_fb_p<step/1000>k
 #   flow:v7              baseline on v7-handover-clean (53 episodes, 17-dim), 140K steps, named v7-flow_h16_s8;
 #                        when it has finished only the last three checkpoints are kept, all of them complete
-#   flow:v8              baseline on v8-handover2 (12-dim), named v8-flow_h16_s8, otherwise as flow:v7
-#   flow:v8stage         the same on v8-handover2-stagelabel (+ observation.environment_state = fine9 stage one-hot,
-#                        docs/workflows/stage-labels): v8-flow_h16_s8_stagelabel
+#   flow:v8stage         v8-flow_h16_s8_stagelabel on v8-handover2-stagelabel (12-dim + observation.environment_state =
+#                        fine9 stage one-hot, docs/workflows/stage-labels), otherwise as flow:v7
+#   flow:v8              its baseline v8-flow_h16_s8: the same data with the stage input dropped (--dataset.drop_names)
 # Run detached (no tmux on the lab computer):
 #   setsid nohup bash ~/wwq/queue_v3.sh flow flow:sepenc >> ~/wwq/logs/queue_v3.log 2>&1 < /dev/null &
 W=${WQ:-$HOME/wwq}  # server1/server2 keep everything on /media/data/wwq: WQ=/media/data/wwq
@@ -60,7 +60,8 @@ for job in "$@"; do
     flow:sepenc) name=dp_flow_h16_s8_sepenc policy=("${FLOW[@]}" --policy.use_separate_rgb_encoder_per_camera=true) ;;
     flow:v6) name=v6_flow_h16_s8 data=v6-handover-curated steps=140000 policy=("${FLOW[@]}") ;;
     flow:v7) name=v7-flow_h16_s8 data=v7-handover-clean steps=140000 keep=3 policy=("${FLOW[@]}") ;;
-    flow:v8) name=v8-flow_h16_s8 data=v8-handover2 steps=140000 keep=3 policy=("${FLOW[@]}") ;;
+    flow:v8) name=v8-flow_h16_s8 data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}"
+      "--dataset.drop_names=[head_motor_1.pos,head_motor_2.pos,x.vel,y.vel,theta.vel,observation.environment_state]") ;;
     flow:v8stage) name=v8-flow_h16_s8_stagelabel data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
     flow:v6ft) name=v6ft_corrections_flow_h16_s8 data=v6-corrections root=$W/data/v6-corrections-v6stats steps=8000 save=2000
       base=v6_flow_h16_s8 policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model

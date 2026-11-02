@@ -17,8 +17,9 @@ English: [README.md](README.md)
   40K 步，batch 12，6 个 worker（每个样本每个相机读 9 帧，每个 batch 约 1.2 GB）。`fbstale` 是不给新帧的对照组，
   `fbstate` 额外输入关节状态。
   `fb:<base>@<step>` 用 `<step>` 处的 checkpoint 当 planner，那个 checkpoint 一存好就启动（`<base>_fb_p<step/1000>k`）。
-  `flow:v7` = 在 `v7-handover-clean` 上训练 `v7-flow_h16_s8`，140K 步；跑完只保留最后三个 checkpoint，三个都完整。`flow:v8` / `flow:v8stage` = 同样配方，在 `v8-handover2` 上训练
-  `v8-flow_h16_s8` / 在 `v8-handover2-stagelabel` 上训练 `v8-flow_h16_s8_stagelabel`（带阶段输入，见 `../stage-labels/`）。
+  `flow:v7` = 在 `v7-handover-clean` 上训练 `v7-flow_h16_s8`，140K 步；跑完只保留最后三个 checkpoint，三个都完整。`flow:v8stage` = 同样配方，在
+  `v8-handover2-stagelabel` 上训练 `v8-flow_h16_s8_stagelabel`（带阶段输入，见 `../stage-labels/`）；`flow:v8` = 它的基线 `v8-flow_h16_s8`，同一份数据，
+  去掉阶段输入（`--dataset.drop_names` 也可以写整个特征名，如 `observation.environment_state`）。
 - `finish_v2.sh` — 在 `data/handover2-trimmed-v2`（V4，50 个 episode）上完成 `d2t_*_v2` REACT run：用规范的数据集 ID 和 root 续训，
   或从头重训。
 - `prune_checkpoints.py <run-output-dir>` — 保留最后三个模型快照，只保留最新的完整训练状态。删除前先验证发布出去的

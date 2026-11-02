@@ -39,3 +39,16 @@ def test_drop_names_slices_items_features_and_stats():
     assert len(ds) == 3 and ds.num_frames == 3
     # DataLoader workers get a pickled copy.
     assert pickle.loads(pickle.dumps(ds))[0]["observation.state"].tolist() == [0.0, 3.0]
+
+
+def test_drop_names_removes_a_whole_feature():
+    base = FakeDataset()
+    base.meta.features["observation.environment_state"] = {"dtype": "float32", "shape": (2,), "names": ["s0", "s1"]}
+    base.meta.stats["observation.environment_state"] = {"min": np.zeros(2)}
+    get = base.__getitem__
+    base.__getitem__ = lambda i: {**get(i), "observation.environment_state": torch.ones(2),
+                                  "observation.environment_state_is_pad": torch.zeros(1, dtype=torch.bool)}
+    ds = DropNamesDataset(base, ["head_motor_1.pos", "observation.environment_state"])
+    assert "observation.environment_state" not in ds.meta.features and "observation.environment_state" not in ds.meta.stats
+    assert not any(k.startswith("observation.environment_state") for k in ds[0])
+    assert ds[0]["observation.state"].tolist() == [0.0, 2.0, 3.0]

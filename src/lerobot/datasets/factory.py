@@ -71,7 +71,10 @@ def resolve_delta_timestamps(
 
 def drop_feature_names(features: dict, names: list[str]) -> dict[str, list[int]]:
     """Removes `names` (e.g. "head_motor_1.pos") from every named vector feature such as observation.state and
-    action, updating its names and shape in place. Returns the kept indices of each feature that changed."""
+    action, updating its names and shape in place. A name that is a whole feature key (e.g.
+    "observation.environment_state") removes that feature. Returns the kept indices of each feature that changed."""
+    for key in set(names) & set(features):
+        del features[key]
     keep = {}
     for key, ft in features.items():
         ft_names = ft.get("names")
@@ -89,6 +92,9 @@ class DropNamesDataset(torch.utils.data.Dataset):
     def __init__(self, dataset: LeRobotDataset, names: list[str]):
         self.dataset = dataset
         sizes = {k: len(ft["names"]) for k, ft in dataset.meta.features.items() if isinstance(ft.get("names"), list)}
+        self.gone = [k for k in names if k in dataset.meta.features]  # whole features, e.g. the stage input
+        for key in self.gone:
+            dataset.meta.stats.pop(key, None)
         self.keep = drop_feature_names(dataset.meta.features, names)
         for key, idx in self.keep.items():
             stats = dataset.meta.stats.get(key, {})
@@ -101,6 +107,9 @@ class DropNamesDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx) -> dict:
         item = self.dataset[idx]
+        for key in self.gone:
+            item.pop(key, None)
+            item.pop(f"{key}_is_pad", None)
         for key, keep in self.keep.items():
             item[key] = item[key][..., keep]
         return item
