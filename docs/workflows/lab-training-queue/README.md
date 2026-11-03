@@ -11,7 +11,7 @@ Check `nvidia-smi` + process owners first; other lab members' jobs come and go.
 Scripts in this directory (copy to the machine with rsync, never scp over a running copy):
 - `queue_v3.sh` — runs Flow jobs one after another on one GPU: `flow`, `flow:strict`,
   `flow:sepenc`, `flow:noshift`; names start with `dp_` consistently on disk, HF and W&B (V5 data). Skips finished runs, resumes from
-  the last checkpoint after a crash (5 tries). `WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`
+  the last checkpoint after a crash (5 minutes apart, up to 20 tries). `WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`
   `fb:<base>`, `fbstale:<base>`, `fbstate:<base>` train feedback denoising ("Catch Me If You Can",
   `--policy.feedback`) on top of the finished flow run `<base>`, on its dataset, as `<base>_fb` etc.: frozen
   planner, only a ~1M-parameter module trains, 40K steps, batch 12, 6 workers (9 frames per camera per sample,

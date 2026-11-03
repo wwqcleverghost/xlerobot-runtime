@@ -11,7 +11,7 @@ English: [README.md](README.md)
 本目录的脚本（用 rsync 拷到机器上，不要用 scp 覆盖正在运行的副本）：
 - `queue_v3.sh` — 在一张 GPU 上依次跑 Flow 任务：`flow`、`flow:strict`、
   `flow:sepenc`、`flow:noshift`；名字在磁盘、HF、W&B 上统一以 `dp_` 开头（V5 数据）。跳过已完成的 run，崩溃后从
-  最后一个 checkpoint 续训（最多 5 次）。`WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`
+  最后一个 checkpoint 续训（每次等 5 分钟，最多 20 次）。`WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`
   `fb:<base>`、`fbstale:<base>`、`fbstate:<base>` 在已完成的 flow run `<base>` 之上、用它的数据集训练反馈去噪
   （“Catch Me If You Can”，`--policy.feedback`），名字为 `<base>_fb` 等：planner 冻结，只训练约 1M 参数的小模块，
   40K 步，batch 12，6 个 worker（每个样本每个相机读 9 帧，每个 batch 约 1.2 GB）。`fbstale` 是不给新帧的对照组，

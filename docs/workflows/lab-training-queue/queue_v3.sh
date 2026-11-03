@@ -114,14 +114,16 @@ for job in "$@"; do
   echo "$(date '+%F %T') start $name"
   echo "=== $(date "+%F %T") start $name" >> $log
   # server4 crashes DataLoader workers now and then (suspected bad RAM): resume from the last checkpoint, or
-  # restart from scratch when there is none yet, at most 5 times.
-  for try in 0 1 2 3 4 5; do
+  # restart from scratch when there is none yet, at most 20 times, 5 minutes apart (server6 2026-11-03: a full
+  # /dev/shm lasted minutes and used up 5 immediate retries in 90 s, leaving the GPU idle for 9 hours).
+  for try in $(seq 0 20); do
     if "${cmd[@]}" >> $log 2>&1; then
       echo "$(date '+%F %T') done $name"
       [ -n "$keep" ] && ls -d $W/outputs/$name/checkpoints/[0-9]* | head -n -$keep | xargs -r rm -rf
       break
     fi
-    [ $try = 5 ] && { echo "$(date '+%F %T') FAILED $name, see $log"; break; }
+    [ $try = 20 ] && { echo "$(date '+%F %T') FAILED $name, see $log"; break; }
+    sleep ${RETRY_WAIT:-300}
     last=$W/outputs/$name/checkpoints/last/pretrained_model/train_config.json
     if [ -f $last ]; then
       cmd=($PY -m lerobot.scripts.lerobot_train --resume=true --config_path=$last --num_workers=$workers)
