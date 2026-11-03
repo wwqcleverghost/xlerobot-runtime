@@ -31,6 +31,8 @@
 #   flow:v8              its baseline v8-flow_h16_s8: the same data with the stage input dropped (--dataset.drop_names)
 #   flow:v6stage         v6-flow_h16_s8_stagelabel: flow:v6 on v6-handover-curated-stagelabel (v6 + fine9 stage one-hot with the
 #                        hand-set starts of examples/xlerobot/stage_edits.json), compared with the v6 baseline
+#   flow:v6stagehead     v6-flow_h16_s8_stagelabel_stagehead: flow:v6stage plus a stage head (--policy.stage_head_weight=0.1):
+#                        the stage stays an input and is also predicted from the joint state and image features
 # Run detached (no tmux on the lab computer):
 #   setsid nohup bash ~/wwq/queue_v3.sh flow flow:sepenc >> ~/wwq/logs/queue_v3.log 2>&1 < /dev/null &
 W=${WQ:-$HOME/wwq}  # server1/server2 keep everything on /media/data/wwq: WQ=/media/data/wwq
@@ -65,6 +67,8 @@ for job in "$@"; do
     flow:v8) name=v8-flow_h16_s8 data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}"
       "--dataset.drop_names=[head_motor_1.pos,head_motor_2.pos,x.vel,y.vel,theta.vel,observation.environment_state]") ;;
     flow:v6stage) name=v6-flow_h16_s8_stagelabel data=v6-handover-curated-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
+    flow:v6stagehead) name=v6-flow_h16_s8_stagelabel_stagehead data=v6-handover-curated-stagelabel steps=140000 keep=3
+      policy=("${FLOW[@]}" --policy.stage_head_weight=0.1) ;;
     flow:v8stage) name=v8-flow_h16_s8_stagelabel data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
     flow:v6ft) name=v6ft_corrections_flow_h16_s8 data=v6-corrections root=$W/data/v6-corrections-v6stats steps=8000 save=2000
       base=v6_flow_h16_s8 policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model

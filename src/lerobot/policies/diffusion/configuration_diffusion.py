@@ -176,6 +176,12 @@ class DiffusionConfig(PreTrainedConfig):
     # Also give the module the joint state recorded with its frame.
     feedback_state: bool = False
 
+    # Stage head: with a stage one-hot as observation.environment_state (docs/workflows/stage-labels), the policy
+    # still takes it as an input and also predicts it from the joint state and image features alone (the head does
+    # not see the stage input, or it could copy it); the cross-entropy times this weight is added to the loss.
+    # 0 = off.
+    stage_head_weight: float = 0.0
+
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
@@ -245,6 +251,8 @@ class DiffusionConfig(PreTrainedConfig):
     def validate_features(self) -> None:
         if len(self.image_features) == 0 and self.env_state_feature is None:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
+        if self.stage_head_weight and self.env_state_feature is None:
+            raise ValueError("The stage head predicts observation.environment_state: the dataset needs that feature.")
         if self.feedback and len(self.image_features) == 0:
             raise ValueError("Feedback denoising looks at camera frames: the policy needs image inputs.")
 

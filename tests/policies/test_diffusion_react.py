@@ -164,3 +164,26 @@ def test_feedback_trains_only_its_module_on_the_frames_it_sees_at_inference():
     for j, (maps, state) in enumerate(steps_seen):  # step j uses the frame of step j - j % 3 in both
         torch.testing.assert_close(maps[0], train_maps[j])
         torch.testing.assert_close(state[0], train_state[j])
+
+
+def test_stage_head_predicts_stage_without_seeing_it():
+    policy = make_flow_policy()
+    policy.config.stage_head_weight = 0.1
+    policy.diffusion = type(policy.diffusion)(policy.config)  # rebuild with the head
+    model = policy.diffusion
+    stage = torch.nn.functional.one_hot(torch.tensor([[0, 0], [1, 1], [0, 1], [1, 0], [1, 1]]), 2).float()
+    batch = {
+        OBS_STATE: torch.randn(5, 2, 2),
+        OBS_ENV_STATE: stage,
+        ACTION: torch.rand(5, 16, A) * 2 - 1,
+        "action_is_pad": torch.zeros(5, 16, dtype=torch.bool),
+    }
+    loss, info = policy.forward(batch)
+    loss.backward()
+    assert torch.isfinite(loss) and set(info) == {"stage_ce", "stage_acc"}
+    assert model.stage_head[0].weight.grad.abs().sum() > 0
+    # the head's input does not depend on the stage input
+    _, a = model._prepare_global_conditioning(batch, obs=True)
+    _, b = model._prepare_global_conditioning({**batch, OBS_ENV_STATE: 1 - stage}, obs=True)
+    torch.testing.assert_close(a, b)
+    assert a.shape == (5, 2, 2)  # state only here (no cameras in this toy config)

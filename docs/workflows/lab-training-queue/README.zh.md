@@ -21,6 +21,8 @@ English: [README.md](README.md)
   `v8-handover2-stagelabel` 上训练 `v8-flow_h16_s8_stagelabel`（带阶段输入，见 `../stage-labels/`）；`flow:v8` = 它的基线 `v8-flow_h16_s8`，同一份数据，
   去掉阶段输入（`--dataset.drop_names` 也可以写整个特征名，如 `observation.environment_state`）。
   `flow:v6stage` = `flow:v6` 换成 `v6-handover-curated-stagelabel`（v6 + 带手改起点的阶段输入），训练 `v6-flow_h16_s8_stagelabel`，和 v6 基线比较。
+  `flow:v6stagehead` = 再加阶段预测头（`--policy.stage_head_weight=0.1`）：阶段照样当输入，同时只用关节读数和相机特征预测阶段
+  （`v6-flow_h16_s8_stagelabel_stagehead`；W&B 里看 `stage_ce` / `stage_acc`）。
 - `finish_v2.sh` — 在 `data/handover2-trimmed-v2`（V4，50 个 episode）上完成 `d2t_*_v2` REACT run：用规范的数据集 ID 和 root 续训，
   或从头重训。
 - `prune_checkpoints.py <run-output-dir>` — 保留最后三个模型快照，只保留最新的完整训练状态。删除前先验证发布出去的

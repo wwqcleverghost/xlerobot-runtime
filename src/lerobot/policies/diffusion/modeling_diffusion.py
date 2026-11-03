@@ -171,8 +171,8 @@ class DiffusionPolicy(PreTrainedPolicy):
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
             batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
         loss = self.diffusion.compute_loss(batch)
-        # no output_dict so returning None
-        return loss, None
+        # the stage head's cross-entropy and accuracy go to the training log; otherwise no output_dict
+        return loss, (self.diffusion.stage_metrics if self.config.stage_head_weight else None)
 
 
 def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMScheduler:
@@ -208,6 +208,12 @@ class DiffusionModel(nn.Module):
             global_cond_dim += self.config.env_state_feature.shape[0]
 
         self.unet = DiffusionConditionalUnet1d(config, global_cond_dim=global_cond_dim * config.n_obs_steps)
+
+        if config.stage_head_weight:  # per observation step: state + image features -> stage logits
+            n_stage = config.env_state_feature.shape[0]
+            self.stage_head = nn.Sequential(
+                nn.Linear(global_cond_dim - n_stage, 256), nn.Mish(), nn.Linear(256, n_stage)
+            )
 
         if config.feedback:
             encoder = self.rgb_encoder[0] if config.use_separate_rgb_encoder_per_camera else self.rgb_encoder
@@ -281,8 +287,9 @@ class DiffusionModel(nn.Module):
 
         return sample
 
-    def _prepare_global_conditioning(self, batch: dict[str, Tensor]) -> Tensor:
-        """Encode image features and concatenate them all together along with the state vector."""
+    def _prepare_global_conditioning(self, batch: dict[str, Tensor], obs: bool = False) -> Tensor:
+        """Encode image features and concatenate them all together along with the state vector. obs=True also
+        returns the per-step features before the environment state is added (B, n_obs_steps, dim)."""
         batch_size, n_obs_steps = batch[OBS_STATE].shape[:2]
         global_cond_feats = [batch[OBS_STATE]]
         # Extract image features.
@@ -313,11 +320,13 @@ class DiffusionModel(nn.Module):
                 )
             global_cond_feats.append(img_features)
 
+        obs_feats = torch.cat(global_cond_feats, dim=-1)
         if self.config.env_state_feature:
             global_cond_feats.append(batch[OBS_ENV_STATE])
 
         # Concatenate features then flatten to (B, global_cond_dim).
-        return torch.cat(global_cond_feats, dim=-1).flatten(start_dim=1)
+        global_cond = torch.cat(global_cond_feats, dim=-1).flatten(start_dim=1)
+        return (global_cond, obs_feats) if obs else global_cond
 
     def generate_actions(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
         """
@@ -484,7 +493,10 @@ class DiffusionModel(nn.Module):
         assert n_obs_steps == self.config.n_obs_steps
 
         # Encode image features and concatenate them all together along with the state vector.
-        global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
+        if self.config.stage_head_weight:
+            global_cond, obs_feats = self._prepare_global_conditioning(batch, obs=True)  # (B, global_cond_dim)
+        else:
+            global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
 
         # Forward diffusion.
         trajectory = batch[ACTION]
@@ -537,7 +549,12 @@ class DiffusionModel(nn.Module):
             in_episode_bound = ~batch["action_is_pad"]
             loss = loss * in_episode_bound.unsqueeze(-1)
 
-        return loss.mean()
+        if not self.config.stage_head_weight:
+            return loss.mean()
+        logits, stage = self.stage_head(obs_feats).flatten(0, 1), batch[OBS_ENV_STATE].argmax(-1).flatten()
+        stage_ce = F.cross_entropy(logits, stage)
+        self.stage_metrics = {"stage_ce": stage_ce.item(), "stage_acc": (logits.argmax(-1) == stage).float().mean().item()}
+        return loss.mean() + self.config.stage_head_weight * stage_ce
 
 
 class SpatialSoftmax(nn.Module):

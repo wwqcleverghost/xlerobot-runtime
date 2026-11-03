@@ -22,7 +22,9 @@ Scripts in this directory (copy to the machine with rsync, never scp over a runn
   `v8-handover2-stagelabel` (stage input, see `../stage-labels/`); `flow:v8` = its baseline `v8-flow_h16_s8` on the same data with the
   stage input dropped (`--dataset.drop_names` also takes a whole feature key such as `observation.environment_state`).
   `flow:v6stage` = `flow:v6` on `v6-handover-curated-stagelabel` (v6 + stage input with the hand-set starts, `v6-flow_h16_s8_stagelabel`),
-  compared with the v6 baseline.
+  compared with the v6 baseline. `flow:v6stagehead` = the same plus a stage head (`--policy.stage_head_weight=0.1`): the stage stays an
+  input and is also predicted from the joint state and image features alone (`v6-flow_h16_s8_stagelabel_stagehead`; `stage_ce` /
+  `stage_acc` in W&B).
 - `finish_v2.sh` — finishes `d2t_*_v2` REACT runs on `data/handover2-trimmed-v2` (V4, 50 episodes): resume
   with the canonical dataset ID and root, or restart from scratch.
 - `prune_checkpoints.py <run-output-dir>` — keeps the last three model snapshots and only the latest full
