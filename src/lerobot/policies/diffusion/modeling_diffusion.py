@@ -165,12 +165,13 @@ class DiffusionPolicy(PreTrainedPolicy):
         action = self._queues[ACTION].popleft()
         return action
 
-    def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, None]:
-        """Run the batch through the model and compute the loss for training or validation."""
+    def forward(self, batch: dict[str, Tensor], reduction: str = "mean") -> tuple[Tensor, None]:
+        """Run the batch through the model and compute the loss for training or validation.
+        reduction="none" gives one loss per sample (RA-BC weighting, lerobot_train --use_rabc)."""
         if self.config.image_features:
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
             batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
-        loss = self.diffusion.compute_loss(batch)
+        loss = self.diffusion.compute_loss(batch, reduction)
         # the stage head's cross-entropy and accuracy go to the training log; otherwise no output_dict
         return loss, (self.diffusion.stage_metrics if self.config.stage_head_weight else None)
 
@@ -445,7 +446,7 @@ class DiffusionModel(nn.Module):
             return torch.stack(maps, dim=1)
         return self.rgb_encoder.feature_map(images.flatten(0, 1)).unflatten(0, images.shape[:2])
 
-    def _feedback_loss(self, batch: dict[str, Tensor]) -> Tensor:
+    def _feedback_loss(self, batch: dict[str, Tensor], reduction: str = "mean") -> Tensor:
         """Final executed actions against the demonstration. The observations hold the planner's n_obs_steps
         frames, then every feedback_every-th later step of the chunk (`observation_delta_indices`): action j
         of the chunk sees the frame of step j - j % feedback_every, as it does at inference."""
@@ -466,9 +467,9 @@ class DiffusionModel(nn.Module):
         loss = F.mse_loss(pred.view_as(target), target, reduction="none")
         if self.config.do_mask_loss_for_padding:
             loss = loss * ~batch["action_is_pad"][:, n_obs - 1 : n_obs - 1 + n_act, None]
-        return loss.mean()
+        return loss.mean() if reduction == "mean" else loss.flatten(1).mean(1)
 
-    def compute_loss(self, batch: dict[str, Tensor]) -> Tensor:
+    def compute_loss(self, batch: dict[str, Tensor], reduction: str = "mean") -> Tensor:
         """
         This function expects `batch` to have (at least):
         {
@@ -483,7 +484,7 @@ class DiffusionModel(nn.Module):
         }
         """
         if self.config.feedback:
-            return self._feedback_loss(batch)
+            return self._feedback_loss(batch, reduction)
         # Input validation.
         assert set(batch).issuperset({OBS_STATE, ACTION, "action_is_pad"})
         assert OBS_IMAGES in batch or OBS_ENV_STATE in batch
@@ -549,12 +550,13 @@ class DiffusionModel(nn.Module):
             in_episode_bound = ~batch["action_is_pad"]
             loss = loss * in_episode_bound.unsqueeze(-1)
 
+        loss = loss.mean() if reduction == "mean" else loss.flatten(1).mean(1)
         if not self.config.stage_head_weight:
-            return loss.mean()
+            return loss
         logits, stage = self.stage_head(obs_feats).flatten(0, 1), batch[OBS_ENV_STATE].argmax(-1).flatten()
         stage_ce = F.cross_entropy(logits, stage)
         self.stage_metrics = {"stage_ce": stage_ce.item(), "stage_acc": (logits.argmax(-1) == stage).float().mean().item()}
-        return loss.mean() + self.config.stage_head_weight * stage_ce
+        return loss + self.config.stage_head_weight * stage_ce
 
 
 class SpatialSoftmax(nn.Module):

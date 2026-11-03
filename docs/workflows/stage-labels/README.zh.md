@@ -138,6 +138,14 @@ A 在 B 开始合拢之后、B 夹紧之前松手：仍是交接，停在 B抓�
 - ep41、42、45、46、50 的 AB对位 长 4.9–6.9 秒（v8 中位数约 1.4 秒）：B 在 A 视野里停留久，标签本身没错。
 - 其余几条交接段没发现问题。
 
+手改起点放在哪一帧（用户 2026-11-03 定）：放在 `fine9` 确认这个事件的那一帧，手改过的录像和其他录像时间口径一致。
+合拢 / 松手（A抓住、B抓住、B放下）按主臂指令：放在对应那次指令事件的确认帧（指令比这次张开的峰值低 5；B放下 是指令超过松手阈值），
+不按视频里从臂夹爪动的时刻——handover1 里从臂夹爪有时比指令晚 1–2 秒（v6 ep51 约 1 秒，ep53 约 2 秒）。AB对位、B抓着、复位 本来就看从臂状态，
+按视频定。规则已经判对的起点不要手改。
+同日把 v6 的手改全部按这个口径改过，并重新给 `v6-handover-curated-stagelabel` 加了标签：ep48 B抓住 728→711、B放下 788→777；
+ep49 B抓住 585→613；ep50 B抓住 583→601、B放下 669→668；只是把规则已判对的指令事件挪离指令时刻的手改删掉（ep14 B抓住、ep20 A抓住、
+ep22 B放下、ep33 B抓住、ep51 B抓住 / B放下、ep53 B抓住 / B放下）；ep41 改回规则（B 在 f425 第一次合拢是空夹、再重试，按规则留在 B抓住；AB对位 从 f247 开始）。
+
 ## 写进数据集
 
 训练只读数据集自己的文件，所以阶段要写成数据集里的一列：
@@ -153,6 +161,49 @@ PYTHONPATH=src python examples/xlerobot/add_stage_labels.py --dataset v8-handove
 
 2026-11-03：`v8-handover2`（45 条，23328 帧，本地构建，未上传 HF）→ `v8-handover2-stagelabel`，当天按本文的规则重新计算过（最后一次：对位要求夹爪张开到位、复位改为 B 的手臂朝初始姿势回收、视野放宽到 35°、A抓住 要求末端静止、B抓着 从 B 夹住开始、夹住用 5 帧平均判断之后）。
 各阶段帧数：A前往 3813、A对位 3352、A抓住 1447、A抓着 3539、AB对位 2276、B抓住 1274、B抓着 2304、B放下 1572、复位 3751。
+
+## 训练加权（RA-BC）
+
+阶段这一列除了当输入，也可以用来给训练加权：SARM 论文（arXiv 2509.25358）的 Reward-Aligned Behavior Cloning（`src/lerobot/utils/rabc.py`）。
+进度不用 SARM 模型估计，而是由阶段直接算出来
+（[`examples/xlerobot/stage_progress.py`](../../../examples/xlerobot/stage_progress.py)，写到 `<数据集>/sarm_progress.parquet`）：
+
+- 第 k 阶段在 0..1 里占的份额 = 它在一条录像里所占时长比例的平均值（SARM 的 temporal proportions）；在该阶段的每一段里进度线性上升。
+  掉了回到 A前往 时进度往回走。
+- 每帧的 RA-BC 权重看 r = 进度(t + horizon) − 进度(t)：r > κ 时为 1，否则为 clip((r − (μ − 2σ)) / 4σ, 0, 1)（μ、σ 是所有帧的统计），
+  r < 0 时为 0。κ = 平均速度下的 r（horizon / 平均每条帧数，脚本会打印），所以比平均慢的动作块都学得少一些。
+  每条录像最后 horizon 帧的权重也偏低（它们的未来被截在结尾）。
+- 加权训练时去掉阶段输入，这样和普通基线比较时只差加权这一项。
+
+2026-11-03，git commit a46bd3d9 + 未提交的改动，本地 `v6-handover-curated-stagelabel`（58 条，34209 帧，标签含当天的手改起点），horizon 16：
+平均速度下 r = 0.0271，μ = 0.0265，σ = 0.0127，κ = 0.027。
+各阶段份额：A前往 0.154、A对位 0.119、A抓住 0.058、A抓着 0.130、AB对位 0.126、B抓住 0.053、B抓着 0.096、B放下 0.070、复位 0.194。
+权重：平均 0.63，42.8% 为 1，0.2% 为 0。各阶段平均：A前往 0.72、A对位 0.69、A抓住 0.61、A抓着 0.67、AB对位 0.52、B抓住 0.69、
+B抓着 0.67、B放下 0.64、复位 0.52。每条录像平均权重的中位数 0.64；最低的是 ep45、48（0.37）、42、41（0.40）、49（0.41），都来自 handover1
+（AB对位 很长或交接很乱，见"手动修正"）。用默认 κ = 0.01 时平均权重会是 0.94（93% 为 1）。
+队列任务：`flow:v6rabc`（`v6-flow_h16_s8_rabc`，见 [`../lab-training-queue/README.zh.md`](../lab-training-queue/README.zh.md)）。
+
+## 阶段作为预测目标
+
+[`examples/xlerobot/add_stage_target.py`](../../../examples/xlerobot/add_stage_target.py) 复制一份 `*-stagelabel` 数据集，把阶段接在动作后面，
+让模型在整个 horizon 上和关节一起预测阶段（模型代码不用改）：
+`--kind stage` 接 fine9 one-hot（9 维，`<名字>-stagepred`），`--kind progress` 接 RA-BC 用的进度 0..1（1 维，`<名字>-progpred`）。
+多出来的维度放在最后：真机评测按机器人自己的关节名取动作，所以只会发 12 个关节
+（2026-11-03 用 3 步冒烟训练的 checkpoint 检查过：输出 21 / 13 维，发出 12 维）。这几个训练去掉了阶段输入，阶段只是预测目标；
+把预测结果再当输入是下一步，先看离线预测准确率。
+9 维时阶段占 loss 的 9 / 21，进度只占 1 / 13。
+
+和基线 `v6_flow_h16_s8` 比较的四个 v6 训练（都是 140K 步，同一配方）：
+
+| 任务 | 模型 | 阶段 |
+|---|---|---|
+| `flow:v6stage` | `v6-flow_h16_s8_stagelabel` | fine9 one-hot 作为输入（规则，评测时实时算） |
+| `flow:v6stagepred` | `v6-flow_h16_s8_stagepred` | 预测 fine9 one-hot，不作为输入 |
+| `flow:v6progpred` | `v6-flow_h16_s8_progpred` | 预测进度 0..1，不作为输入 |
+| `flow:v6rabc` | `v6-flow_h16_s8_rabc` | 进度只用作 RA-BC 权重 |
+
+2026-11-03：由 `v6-handover-curated-stagelabel`（58 条，34209 帧，19:00 的标签，含当天的手改起点）在本地构建
+`v6-handover-curated-stagepred`、`v6-handover-curated-progpred`（未上传 HF）。
 
 ## 评测
 

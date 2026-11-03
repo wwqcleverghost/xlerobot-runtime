@@ -107,6 +107,7 @@ def update_policy(
         if rabc_batch_weights is not None:
             # Get per-sample losses
             per_sample_loss, output_dict = policy.forward(batch, reduction="none")
+            output_dict = output_dict or {}  # diffusion returns None
 
             # Apply RA-BC weights: L_RA-BC = Σ(w_i * l_i) / (Σw_i + ε)
             # rabc_batch_weights is already normalized to sum to batch_size
@@ -288,7 +289,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         from lerobot.utils.rabc import RABCWeights
 
         # Get chunk_size from policy config
-        chunk_size = getattr(policy.config, "chunk_size", None)
+        chunk_size = getattr(policy.config, "chunk_size", None) or getattr(policy.config, "horizon", None)
         if chunk_size is None:
             raise ValueError("Chunk size is not found in policy config")
 

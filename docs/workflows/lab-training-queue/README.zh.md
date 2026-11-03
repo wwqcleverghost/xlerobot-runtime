@@ -23,6 +23,10 @@ English: [README.md](README.md)
   `flow:v6stage` = `flow:v6` 换成 `v6-handover-curated-stagelabel`（v6 + 带手改起点的阶段输入），训练 `v6-flow_h16_s8_stagelabel`，和 v6 基线比较。
   `flow:v6stagehead` = 再加阶段预测头（`--policy.stage_head_weight=0.1`）：阶段照样当输入，同时只用关节读数和相机特征预测阶段
   （`v6-flow_h16_s8_stagelabel_stagehead`；W&B 里看 `stage_ce` / `stage_acc`）。
+  `flow:v6rabc` = v6 基线，同一份带阶段标签的数据，去掉阶段输入，按阶段进度做 RA-BC 加权（`v6-flow_h16_s8_rabc`，κ = 0.027；
+  训练前先把 `sarm_progress.parquet` 写进数据集，见 `../stage-labels/`"训练加权"）。`flow:v6stagepred` / `flow:v6progpred` = v6 基线，
+  额外把阶段 one-hot / 阶段进度当作动作的附加维度来预测，没有阶段输入（`v6-flow_h16_s8_stagepred` / `_progpred`，数据
+  `v6-handover-curated-stagepred` / `-progpred`，见 `../stage-labels/`"阶段作为预测目标"）。
 - `finish_v2.sh` — 在 `data/handover2-trimmed-v2`（V4，50 个 episode）上完成 `d2t_*_v2` REACT run：用规范的数据集 ID 和 root 续训，
   或从头重训。
 - `prune_checkpoints.py <run-output-dir>` — 保留最后三个模型快照，只保留最新的完整训练状态。删除前先验证发布出去的

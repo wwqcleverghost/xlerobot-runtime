@@ -33,6 +33,11 @@
 #                        hand-set starts of examples/xlerobot/stage_edits.json), compared with the v6 baseline
 #   flow:v6stagehead     v6-flow_h16_s8_stagelabel_stagehead: flow:v6stage plus a stage head (--policy.stage_head_weight=0.1):
 #                        the stage stays an input and is also predicted from the joint state and image features
+#   flow:v6rabc          v6-flow_h16_s8_rabc: the v6 baseline (stage input dropped) trained with RA-BC weights from the
+#                        stage progress (examples/xlerobot/stage_progress.py, written into the dataset before training)
+#   flow:v6stagepred     v6-flow_h16_s8_stagepred: the v6 baseline that also predicts the fine9 stage one-hot (9 extra action
+#                        dims of v6-handover-curated-stagepred, examples/xlerobot/add_stage_target.py); no stage input
+#   flow:v6progpred      v6-flow_h16_s8_progpred: the same with the stage progress 0..1 (1 extra action dim, v6-handover-curated-progpred)
 # Run detached (no tmux on the lab computer):
 #   setsid nohup bash ~/wwq/queue_v3.sh flow flow:sepenc >> ~/wwq/logs/queue_v3.log 2>&1 < /dev/null &
 W=${WQ:-$HOME/wwq}  # server1/server2 keep everything on /media/data/wwq: WQ=/media/data/wwq
@@ -69,6 +74,13 @@ for job in "$@"; do
     flow:v6stage) name=v6-flow_h16_s8_stagelabel data=v6-handover-curated-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
     flow:v6stagehead) name=v6-flow_h16_s8_stagelabel_stagehead data=v6-handover-curated-stagelabel steps=140000 keep=3
       policy=("${FLOW[@]}" --policy.stage_head_weight=0.1) ;;
+    flow:v6rabc) name=v6-flow_h16_s8_rabc data=v6-handover-curated-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}"
+      "--dataset.drop_names=[observation.environment_state]" --use_rabc=true --rabc_kappa=0.027)
+      [ -n "$DRY" ] || $PY examples/xlerobot/stage_progress.py --root $W/data/$data || continue ;;
+    flow:v6stagepred) name=v6-flow_h16_s8_stagepred data=v6-handover-curated-stagepred steps=140000 keep=3 policy=("${FLOW[@]}"
+      "--dataset.drop_names=[observation.environment_state]") ;;
+    flow:v6progpred) name=v6-flow_h16_s8_progpred data=v6-handover-curated-progpred steps=140000 keep=3 policy=("${FLOW[@]}"
+      "--dataset.drop_names=[observation.environment_state]") ;;
     flow:v8stage) name=v8-flow_h16_s8_stagelabel data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
     flow:v6ft) name=v6ft_corrections_flow_h16_s8 data=v6-corrections root=$W/data/v6-corrections-v6stats steps=8000 save=2000
       base=v6_flow_h16_s8 policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model
