@@ -30,11 +30,12 @@ KEY = "observation.environment_state"
 
 
 def labels(ds_id):
-    """{episode: (n, 9) float32 one-hot of fine9}"""
+    """{episode: (n, 9) float32 one-hot of fine9, with the hand-set stage starts of examples/xlerobot/stage_edits.json}"""
     o, out = server.load(ds_id), {}
     for ep in o["eps"].index:
         a, s = server.ep_arrays(o, ep)
-        out[int(ep)] = np.eye(len(stage_labels.STAGES), dtype=np.float32)[stage_labels.fine9(s, a, server.tape_sizes(ds_id, ep))]
+        lab = stage_labels.apply_edits(stage_labels.fine9(s, a, server.tape_sizes(ds_id, ep)), stage_labels.edits(ds_id, ep))
+        out[int(ep)] = np.eye(len(stage_labels.STAGES), dtype=np.float32)[lab]
     return out
 
 

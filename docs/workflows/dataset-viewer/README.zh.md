@@ -158,6 +158,11 @@ lerobot_dataset_quality.py）一改就重算。第一次打开历史表时后台
 下拉框里是 `fine9`（只看过去的帧，机器人运行时能算，训练用的就是它）和 `eval5`（评测打分）；标准答案 `std9` 只在命令行用来核对（`--compare`）。
 `fine9` 要量腕部相机里的胶带，一条第一次显示时要解码两路腕部视频（约 6 秒），结果缓存在 `outputs/dataset_viewer/cache/tape/`。
 
+**手动改阶段起点**：勾上顶栏"改阶段"（阶段选 `fine9`），阶段条上每个边界出现把手，像裁剪一样拖动，松手即保存；视频跟着跳到把手位置。
+双击把手恢复自动。改过的把手是橙色，橙色虚线是规则算出的原位置。保存在 git 里的 `examples/xlerobot/stage_edits.json`
+（`{数据集: {ep: {阶段名: 起始帧}}}`，`<名字>-stagelabel` 和 `<名字>` 共用），`add_stage_labels.py` 写标签时套用。
+注意：真机评测时实时算的阶段没有这些手改（见 [`../stage-labels/README.zh.md`](../stage-labels/README.zh.md)"手动修正"）。
+
 ## 文件
 
 - `server.py`：服务和 JSON API（`/api/datasets`、`episodes`、`curves`、`stages`、`stage_rules`、`frame`、`review`、`review/edit`、`label`、`rebuild`、`builds`、

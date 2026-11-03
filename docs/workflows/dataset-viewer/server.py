@@ -224,10 +224,33 @@ def tape_sizes(ds_id, ep):
 
 
 def stages(ds_id, ep, rule):
-    """Auto stage labels of one episode (examples/xlerobot/stage_labels.py) as [(start, end, stage)] runs."""
+    """Stage labels of one episode (examples/xlerobot/stage_labels.py) as [(start, end, stage)] runs. fine9 includes the
+    hand-set starts (stage_edits.json, what add_stage_labels.py writes); auto = the rule alone."""
     a, s = ep_arrays(load(ds_id), ep)
     names, fn, _, vision = stage_labels.RULES[rule]
-    return dict(names=names, segs=stage_labels.segments(fn(s, a, tape_sizes(ds_id, ep) if vision else None)))
+    lab = fn(s, a, tape_sizes(ds_id, ep) if vision else None)
+    ed = stage_labels.edits(ds_id, ep) if rule == "fine9" else {}
+    return dict(names=names, segs=stage_labels.segments(stage_labels.apply_edits(lab, ed)), auto=stage_labels.segments(lab),
+                edits=ed, editable=rule == "fine9")
+
+
+def set_stage_edit(ds_id, ep, stage, start):
+    """Hand-set the start frame of one stage (start None = back to the rule); returns the episode's new fine9 stages."""
+    assert stage in stage_labels.STAGES, stage
+    key = ds_id.removesuffix("-stagelabel")
+    with lock:
+        d = read_json(stage_labels.EDITS, {})
+        e = d.setdefault(key, {}).setdefault(str(ep), {})
+        if start is None:
+            e.pop(stage, None)
+        else:
+            e[stage] = int(start)
+        if not e:
+            del d[key][str(ep)]
+        if not d[key]:
+            del d[key]
+        write_json(stage_labels.EDITS, d)
+    return stages(ds_id, ep, "fine9")
 
 
 def decode_frame(ds_id, cam, ep, f):
@@ -874,6 +897,7 @@ class Handler(BaseHTTPRequestHandler):
         b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         routes = {
             "/api/label": lambda: set_label(b["id"], b["ep"], b["patch"]),  # ep or "<ep>.<segment>"
+            "/api/stage_edit": lambda: set_stage_edit(b["id"], int(b["ep"]), b["stage"], b.get("start")),
             "/api/review/edit": lambda: edit_spec(b["spec"], b["ds"], int(b["ep"]), b.get("edit"), b.get("seg")),
             "/api/rebuild": lambda: rebuild(b["spec"], b["rule"], b["dsts"], b.get("overwrite", False), b.get("arm_only", False)),
             "/api/spec/new": lambda: new_spec(b["dst"], b["id"]),

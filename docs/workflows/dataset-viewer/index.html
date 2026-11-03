@@ -110,6 +110,7 @@ dialog::backdrop{background:#0007} dialog .player{width:min(440px,100%)} dialog>
     <nav class="tabs"><a href="#review">裁剪审阅</a><a href="#batch">批量播放</a><a href="#quality">训练集质量 / 筛选</a><a href="#eval">测试集打分</a></nav>
     <label title="所有视频的播放速度（快捷键 &lt; &gt;）">速度 <select id="rate"></select></label>
     <label title="自动阶段标签（examples/xlerobot/stage_labels.py），画在关节曲线上方">阶段 <select id="stage"></select></label>
+    <label title="在阶段条上拖动边界把手改阶段起点（只对 fine9），双击把手恢复自动；保存在 examples/xlerobot/stage_edits.json，add_stage_labels.py 写标签时套用"><input type="checkbox" id="stageEdit">改阶段</label>
     <div class="picker" id="picker"></div>
     <span id="info"></span>
     <span id="status"></span>

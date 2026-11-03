@@ -132,6 +132,27 @@ Frames `fine9` enters each stage after `std9` (median / largest, 30 frames = 1 s
 Holding (A抓着, B抓着) is 9 frames late: the reading is averaged over 5 frames, then checked for 5 frames. A抓住's occasional large lag
 comes from slow closing (confirmed 5 below the peak).
 
+## Hand corrections
+
+Where the rule gets a boundary wrong, drag the stage start by hand in the dataset viewer (top bar "改阶段", see
+[`../dataset-viewer/README.md`](../dataset-viewer/README.md)); saved in `examples/xlerobot/stage_edits.json`. `apply_edits` moves only the start
+of that stage's first run, kept inside the runs before and after it (no stage vanishes; to move a start past the next stage's start, move the later stage first); `add_stage_labels.py` applies the edits,
+`--compare` and `std9` do not.
+Cost: in real-robot eval `LiveStage` computes the rule live and judges the same situation the rule's way, so where a label was edited
+by hand the training label and the eval input differ. Fix the rule when it can be fixed; hand edits are for single episodes.
+
+2026-11-03: `v6-handover-curated` ep49 (from handover1 ep19): with B half open, the leader command dips to 11 at f364 and opens back to 23
+0.5 s later; the rule takes it as B starting to close, so B抓住 lasts from f365 to f626 (9 s) while the real close is around f610. In v6, v7
+and v8 only two episodes have a B closing that reopens without a hold: this one (= v7 ep45) and v6 ep41 / v7 ep38 (B closes fully, misses
+and retries; staying in B抓住 is the rule and is right there).
+
+Same day, the hand-off of the 13 handover1 episodes in v6 (v6 ep41–53 = handover1 ep 0 1 5 9 11 12 14 17 19 20 22 25 29):
+- ep48 (h1 ep17), ep50 (h1 ep20): B's first grip (reading 16.8 / 12.6) opens again at once while A never lets go, and the rule takes
+  that opening as B放下; the real hand-off is around f710 (ep48) / f600 (ep50), so B抓住, B抓着, B放下 and 复位 after it are all wrong.
+  v8 has no such case.
+- ep41, 42, 45, 46, 50: AB对位 lasts 4.9–6.9 s (v8 median about 1.4 s): B stays in A's view long; the labels themselves are right.
+- No other problem found in the hand-off of the rest.
+
 ## Writing them into a dataset
 
 Training reads only the dataset's own files, so the stage has to be a column there:

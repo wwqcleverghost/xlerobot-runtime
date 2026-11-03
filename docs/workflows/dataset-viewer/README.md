@@ -188,6 +188,12 @@ The select offers `fine9` (causal, what the robot can compute live, the labels t
 `std9` is only on the command line, for checking (`--compare`). `fine9` measures the tape in the wrist cameras: the first time an episode is shown it decodes both wrist videos (about 6 s),
 cached in `outputs/dataset_viewer/cache/tape/`.
 
+**Hand-set stage starts**: tick "改阶段" in the top bar (stage rule `fine9`) and every boundary on the stage band gets a handle; drag it
+like a trim handle, it is saved on release and the video follows it. Double-click a handle to go back to the rule. Hand-set handles are
+orange, the orange dashed line is where the rule put it. Saved in the git-tracked `examples/xlerobot/stage_edits.json`
+(`{dataset: {ep: {stage name: start frame}}}`, `<name>-stagelabel` shares the edits of `<name>`); `add_stage_labels.py` applies them.
+Note: the stage the robot computes live in eval has no hand edits (see "Hand corrections" in [`../stage-labels/README.md`](../stage-labels/README.md)).
+
 ## Files
 
 - `server.py`: server and JSON API (`/api/datasets`, `episodes`, `curves`, `stages`, `stage_rules`, `frame`, `review`, `review/edit`, `label`, `rebuild`, `builds`,

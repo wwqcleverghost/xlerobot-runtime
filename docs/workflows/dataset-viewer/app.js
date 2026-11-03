@@ -206,17 +206,45 @@ class Curves {
     allCurves.add(this);
     let drag = false;
     const at = ev => { const r = this.cv.getBoundingClientRect(); return Math.round((ev.clientX - r.left) / r.width * this.n); };
-    this.cv.onpointerdown = ev => { drag = true; this.cv.setPointerCapture(ev.pointerId); this.onseek && this.onseek(at(ev)); };
-    this.cv.onpointermove = ev => {
-      if (drag && this.onseek) this.onseek(at(ev));
-      const f = at(ev), s = this.stages && this.stages.segs.find(([a, b]) => f >= a && f < b);
-      this.cv.title = s ? `${this.stages.names[s[2]]} ${sec(s[0])}–${sec(s[1])} 秒` : '';
+    this.cv.onpointerdown = ev => {
+      const k = this.handleAt(ev);
+      drag = k ? {k} : true; this.cv.setPointerCapture(ev.pointerId); this.onseek && this.onseek(k ? this.stages.segs[k][0] : at(ev));
     };
-    this.cv.onpointerup = () => { drag = false; };
+    this.cv.onpointermove = ev => {
+      if (drag && drag.k) {   // move the boundary between stage run k-1 and k, inside both runs
+        const sg = this.stages.segs, k = drag.k, f = Math.max(sg[k - 1][0] + 1, Math.min(sg[k][1] - 1, at(ev)));
+        sg[k - 1][1] = sg[k][0] = drag.f = f; this.draw(); this.onseek && this.onseek(f);
+      } else if (drag && this.onseek) this.onseek(at(ev));
+      const f = at(ev), s = this.stages && this.stages.segs.find(([a, b]) => f >= a && f < b), k = this.handleAt(ev);
+      this.cv.style.cursor = k ? 'ew-resize' : '';
+      this.cv.title = k ? `拖动改 ${this.stages.names[this.stages.segs[k][2]]} 的起点，双击恢复自动` : s ? `${this.stages.names[s[2]]} ${sec(s[0])}–${sec(s[1])} 秒` : '';
+    };
+    this.cv.onpointerup = () => {
+      if (drag && drag.k && drag.f != null) this.saveStage(this.stages.segs[drag.k][2], drag.f);
+      drag = false;
+    };
+    this.cv.ondblclick = ev => { const k = this.handleAt(ev); if (k) this.saveStage(this.stages.segs[k][2], null); };
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(box);
     getCurves(o.id, o.ep).then(d => { this.data = d; this.draw(); }).catch(e => { box.title = e.message; });
     this.loadStages();
+  }
+  handleAt(ev) {  // index of the stage run whose start boundary is under the pointer (stage band, edit mode), else 0
+    if (!G.stageEdit || !this.stages || !this.stages.editable) return 0;
+    const r = this.cv.getBoundingClientRect();
+    if (ev.clientY - r.top > 16) return 0;
+    const x = ev.clientX - r.left, sg = this.stages.segs;
+    let best = 0;
+    for (let k = 1; k < sg.length; k++) if (Math.abs(sg[k][0] / this.n * r.width - x) < 7 && (!best || Math.abs(sg[k][0] / this.n * r.width - x) < Math.abs(sg[best][0] / this.n * r.width - x))) best = k;
+    return best;
+  }
+  saveStage(g, start) {  // hand-set start of stage g (null = back to the rule), saved in examples/xlerobot/stage_edits.json
+    const name = this.stages.names[g], k = [this.id, this.ep, 'fine9'].join('|');
+    api('/api/stage_edit', {id: this.id, ep: this.ep, stage: name, start}).then(d => {
+      stageCache.set(k, Promise.resolve(d));
+      allCurves.forEach(c => { if (c.id === this.id && c.ep === this.ep && G.stage === 'fine9') { c.stages = d; c.draw(); } });
+      status(start == null ? `${this.id} ep${this.ep} ${name} 起点恢复自动` : `${this.id} ep${this.ep} ${name} 起点 = 第 ${start} 帧（${sec(start)} 秒），已保存`);
+    }).catch(e => { status('保存阶段失败：' + e.message, 1); this.loadStages(); });
   }
   loadStages() {  // band of auto stage labels above the lanes, rule from the top-bar select (G.stage, '' = off)
     const rule = G.stage;
@@ -248,12 +276,21 @@ class Curves {
     c.lineWidth = 1.5;
     (m.snaps || []).forEach(([t]) => { c.strokeStyle = '#e34948'; c.beginPath(); c.moveTo(x(t), 0); c.lineTo(x(t), H); c.stroke(); });
     if (m.fail != null) { c.strokeStyle = '#e34948'; c.setLineDash([4, 3]); c.beginPath(); c.moveTo(x(m.fail), 0); c.lineTo(x(m.fail), H); c.stroke(); c.setLineDash([]); }
+    const ink0 = css.getPropertyValue('--ink');
     if (this.stages) {
       c.font = '10px system-ui'; c.textBaseline = 'middle';
       for (const [a, b, g] of this.stages.segs) {
         c.fillStyle = css.getPropertyValue(`--s${g % 10 + 1}`); c.fillRect(x(a), 0, x(b) - x(a), SB - 2);
         const name = this.stages.names[g];
-        if (c.measureText(name).width + 4 < x(b) - x(a)) { c.fillStyle = '#fff'; c.fillText(name, x(a) + 2, (SB - 2) / 2); }
+        if (c.measureText(name).width + 4 < x(b) - x(a)) { c.fillStyle = '#fff'; c.fillText(name, x(a) + 4, (SB - 2) / 2); }
+      }
+      if (G.stageEdit && this.stages.editable) {  // boundary handles; hand-set starts orange, with the rule's start as a dashed line
+        const ed = this.stages.edits || {}, auto = Object.fromEntries((this.stages.auto || []).map(([a, , g]) => [g, a]).reverse());
+        this.stages.segs.slice(1).forEach(([a, , g]) => {
+          const set = this.stages.names[g] in ed;
+          if (set && auto[g] != null && auto[g] !== a) { c.strokeStyle = '#f80'; c.setLineDash([2, 2]); c.beginPath(); c.moveTo(x(auto[g]), 0); c.lineTo(x(auto[g]), H); c.stroke(); c.setLineDash([]); }
+          c.fillStyle = set ? '#f80' : ink0; c.fillRect(x(a) - 2, 0, 4, SB - 2);
+        });
       }
       c.textBaseline = 'alphabetic';
     }
@@ -1224,6 +1261,9 @@ document.addEventListener('keydown', ev => {
   $('#rate').innerHTML = RATES.map(r => `<option value="${r}" ${r === G.rate ? 'selected' : ''}>${r}×</option>`).join('');
   $('#rate').onchange = ev => setRate(+ev.target.value);
   G.stage = LS.get('stage', '');
+  G.stageEdit = LS.get('stage_edit', false);
+  $('#stageEdit').checked = G.stageEdit;
+  $('#stageEdit').onchange = ev => { G.stageEdit = ev.target.checked; LS.set('stage_edit', G.stageEdit); allCurves.forEach(c => c.draw()); };
   api('/api/stage_rules').then(rules => {
     if (!rules[G.stage]) G.stage = '';
     $('#stage').innerHTML = '<option value="">关</option>' + Object.entries(rules).map(([k, r]) =>

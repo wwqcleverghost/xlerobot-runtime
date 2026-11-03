@@ -278,6 +278,45 @@ RULES = {  # name -> (stage names, fn(state, action, size) -> per-frame stage in
 }
 
 
+EDITS = Path(__file__).with_name("stage_edits.json")    # hand corrections: {dataset: {ep: {stage name: start frame}}}
+
+
+def edits(ds_id, ep):
+    """Hand-set stage starts of one episode ({stage name: frame}); <name>-stagelabel shares the edits of <name> (same episodes)."""
+    import json
+    d = json.loads(EDITS.read_text()) if EDITS.exists() else {}
+    return d.get(ds_id.removesuffix("-stagelabel"), {}).get(str(ep), {})
+
+
+def apply_edits(lab, ed):
+    """Move the start of each edited stage's first run to the hand-set frame: earlier takes frames from the stage before,
+    later gives them to it. Kept strictly inside the neighbouring runs, so no stage vanishes; a stage that is not there is skipped."""
+    for _ in range(len(ed)):    # repeat: moving a start past the old end of its run needs the next stage moved first
+        new = _apply_once(lab, ed)
+        if (new == lab).all():
+            break
+        lab = new
+    return lab
+
+
+def _apply_once(lab, ed):
+    lab = lab.copy()
+    for name, f in sorted(ed.items(), key=lambda x: STAGES.index(x[0])):
+        g = STAGES.index(name)
+        idx = np.flatnonzero(lab == g)
+        if not len(idx) or idx[0] == 0:
+            continue
+        i0 = int(idx[0])
+        end = i0 + int(np.argmax(np.r_[lab[i0:], -1] != g))     # end of that run
+        prev = i0 - int(np.argmax(np.r_[lab[i0 - 1::-1], -1] != lab[i0 - 1]))   # start of the run before it
+        f = min(max(int(f), prev + 1), end - 1)
+        if f < i0:
+            lab[f:i0] = g
+        else:
+            lab[i0:f] = lab[i0 - 1]
+    return lab
+
+
 def segments(lab):
     """[(start, end, stage)] runs of a per-frame label array."""
     cut = np.flatnonzero(np.diff(lab)) + 1
@@ -332,6 +371,10 @@ def selfcheck():
         lab2 = fine9(s2, a2, size)
         assert lab2[19] == 2 and lab2[35] == 3 and (np.diff(lab2) >= 0).all(), segments(lab2)
         assert compare(ref, ref)[0] == 1.0
+        e = apply_edits(lab, {"B抓住": 90})    # later: AB对位 grows to 90; past the run end is clamped to it - 1
+        assert starts(e)[5] == 90 and e[89] == 4 and starts(apply_edits(lab, {"B抓住": 500}))[5] == 93
+        assert starts(apply_edits(lab, {"B抓住": 70}))[5:7] == [70, 94] and (apply_edits(lab, {}) == lab).all()
+        assert starts(apply_edits(lab, {"B抓着": 150, "B放下": 160}))[6:8] == [150, 160]   # past the old B放下 start (141)
         s3 = s.copy()                     # L still moving down while it starts closing at 16, stops at 17: A抓住 from 17
         s3[:18, 1] = np.linspace(-40, 0, 18)
         r3, f3 = std9(s3, a, size), fine9(s3, a, size)

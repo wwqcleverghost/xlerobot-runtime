@@ -21,6 +21,8 @@ Scripts in this directory (copy to the machine with rsync, never scp over a runn
   only the last three checkpoints are kept, all complete. `flow:v8stage` = the same recipe, `v8-flow_h16_s8_stagelabel` on
   `v8-handover2-stagelabel` (stage input, see `../stage-labels/`); `flow:v8` = its baseline `v8-flow_h16_s8` on the same data with the
   stage input dropped (`--dataset.drop_names` also takes a whole feature key such as `observation.environment_state`).
+  `flow:v6stage` = `flow:v6` on `v6-handover-curated-stagelabel` (v6 + stage input with the hand-set starts, `v6-flow_h16_s8_stagelabel`),
+  compared with the v6 baseline.
 - `finish_v2.sh` — finishes `d2t_*_v2` REACT runs on `data/handover2-trimmed-v2` (V4, 50 episodes): resume
   with the canonical dataset ID and root, or restart from scratch.
 - `prune_checkpoints.py <run-output-dir>` — keeps the last three model snapshots and only the latest full
