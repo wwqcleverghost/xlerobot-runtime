@@ -85,6 +85,29 @@ command while it stays closed; release = command opens first. Tape hidden from t
 History: before 2026-10-23 trials were scored 0-5 with every stage after the first failure counted as 0, and
 smoothness was reported separately. HF `wwqcleverghost/scores-v4-v5` holds those scores.
 
+## Optional: task end of each trial
+
+The operator ends a trial by hand, a few seconds early or late. `mark_end.py` writes `<eval dir>/episode_end.csv`
+(episode, end_frame, frames, how) without cutting anything:
+
+still = the frame from which every arm joint (command and follower) stays within 3 units of its last pose: the robot has stopped
+and the rest is waiting.
+
+- `reset`: the trial reached 复位 (fine9 stage 8: the live stage from the eval's `stages.csv`, else recomputed offline from the
+  wrist videos): end = the later of still and the first 复位 frame + 1, so the end is always inside 复位 (user, 2026-11-05).
+- `still`: never reached 复位: end = still.
+- `human`: the robot moved until the last 0.5 s; end = the recorded length.
+
+The dataset viewer's "阶段 / 进度" page draws it and greys the rest. Scores do not use it: it is for viewing only (user, 2026-11-05).
+
+```bash
+PYTHONPATH=src python docs/workflows/eval-scoring/mark_end.py ~/.cache/huggingface/lerobot/wwqcleverghost/eval-v8-flow_h16_s8
+```
+
+2026-11-05 (git 79bf9dd6 + uncommitted changes): `eval-v8-flow_h16_s8` 4 placed / 5 still / 1 human; `eval-v6-flow_h16_s8`
+31 placed / 16 still / 3 human. Successful trials were recorded 1.2–10.1 s past the release; three v6 failures stopped at 0.6 s
+(never left the start) but were recorded for 13.9–44.5 s.
+
 ## Optional: per-frame stage labels
 
 `score.stage_frames(state, action)` returns one label per frame: 0 reaching, 1 arm A holds, 2 both hold, 3 arm B holds,

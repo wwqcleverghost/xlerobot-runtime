@@ -210,7 +210,7 @@ B抓着 0.67、B放下 0.64、复位 0.52。每条录像平均权重的中位数
 真机评测时模型需要每一帧的阶段。`lerobot_record_eval.py` 和 `examples/xlerobot/eval_remote_trials.py` **自动**处理：
 模型的输入里有 `observation.environment_state` 时（用 `*-stagelabel` 训练的模型），每一帧用 `stage_labels.LiveStage`
 （关节读数 + 两路腕部画面 `left_wrist` / `right_wrist` + 上一帧发出的指令）算出 `fine9` 阶段喂给模型，启动时打印
-`Stage input on: ...`。人工接管期间也照常更新，交还模型时阶段是最新的。阶段只喂给模型，不写进录下的测试集（测试集可以用同样的规则离线算）。
+`Stage input on: ...`。人工接管期间也照常更新，交还模型时阶段是最新的。阶段不写进录下的数据（可以用同样的规则离线算）；`lerobot_record_eval.py` 另外把它和模型自己判断的阶段逐帧记到 `success.csv` 旁边的 `stages.csv`，数据集网页的"阶段 / 进度"页画出来。
 不需要额外参数；没看到 `Stage input on` 就说明模型没有这个输入。
 
 ## 命令行

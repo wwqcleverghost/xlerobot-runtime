@@ -2,8 +2,8 @@
 
 中文：[README.zh.md](README.zh.md)
 
-One local web page, four pages under one shared top bar: **trim review**, **batch playback**, **training-set quality / curate**, **eval scores**.
-Datasets are listed automatically from `~/.cache/huggingface/lerobot/wwqcleverghost/` (eval datasets included, also when nested in
+One local web page, five pages under one shared top bar: **trim review**, **batch playback**, **training-set quality / curate**, **eval scores**, **stages / progress**.
+Datasets are listed automatically from `~/.cache/huggingface/lerobot/wwqcleverghost/` and, as `eval/<run>`, from the eval runs not yet uploaded in `outputs/eval/<run>/dataset/` (eval datasets included, also when nested in
 `<dir>/dataset/` or `<dir>/<set>/dataset/`; symlinks under old names and meta-only directories without data files are skipped). A dataset with `success.csv` is an eval; one with human takeovers (`interventions.csv`, `*_takeover`) is DAgger training data, listed with the training sets and not in the eval scores. The top bar shows the dataset's HF revision (for local
 builds: build time and git commit) and the git commit of the current code.
 
@@ -179,6 +179,32 @@ script (report.py, score.py, smooth.py, lerobot_dataset_quality.py) change. The 
 computes what is missing (about 1 minute for all) and the table fills in as it goes; after that it opens in under a second.
 Bump `SCORE_VERSION` when `_quality` / `_evaluation` in `server.py` change what they return.
 
+## 5. Stages / progress (`#stage`)
+
+For the stage models (stage input, stage head, `*-stagepred`, `*-progpred`, see [`../stage-labels/README.md`](../stage-labels/README.md)).
+Pick one or more evals. At the top, **model comparison**, one line per eval (sortable; click a line to jump to its trials):
+success k/n, how many trials reached each of the 9 stages (one bar per stage, its height = the share of trials that got there,
+hover for counts), median time of the successful trials (task end, see below) with min–max, rule and model ▼ per trial, and
+"模型 = 规则" = the share of frames before the end where the model's stage equals the rule's.
+
+Below, one row per trial, all rows on one time axis (gridline every 5 s), so lengths compare at a glance:
+
+- Top band: the rule stage. The live `fine9` stage fed to the model when the eval wrote `stages.csv`, else `fine9` recomputed
+  offline (decodes the wrist videos the first time, one trial at a time).
+- Second band: the model's own stage guess (stage head / `*-stagepred` argmax / `*-progpred` progress → stage); faint where its
+  probability is low. "（没有模型阶段输出）" = the eval has no `stages.csv` or the model has no stage output.
+- Plot 0..1: black = progress of the rule stage, blue = the model's progress (`*-progpred`: its own output; others: from its stages).
+  Progress per stage uses the fixed v6 shares `stage_labels.PROG_SHARES`.
+- Marks on the bottom edge of the plot (filled = model, hollow = rule): red ▼ = the stage goes down (back), orange ▲ = a stage is
+  skipped, or the predicted progress steps by > 0.1 in one frame; counts next to the trial (▼n ▲n), and the model's ▼ total in the panel header.
+- Dashed line = the task end (always inside 复位 when the trial got there), grey after it (nothing is cut): `episode_end.csv` from
+  [`../eval-scoring/mark_end.py`](../eval-scoring/README.md); without it, computed on the fly from `stages.csv`, else not shown (run
+  mark_end.py: it recomputes fine9 from the videos). The label shows end / recorded seconds.
+- Hover: time, both stages, probability / progress. Click: the trial's player and joint curves from that moment, greyed after the end.
+
+`stages.csv` (episode, frame, rule, pred, prob, progress; -1 / empty = none) is written next to `success.csv` by
+`lerobot_record_eval.py` for every saved trial of a model with a stage input or output (not by `eval_remote_trials.py` yet).
+
 ## Auto stage labels (top bar "阶段")
 
 A select in the top bar draws per-frame task stages as a colored band above every set of joint curves (review cards and the episode
@@ -196,8 +222,8 @@ Note: the stage the robot computes live in eval has no hand edits (see "Hand cor
 
 ## Files
 
-- `server.py`: server and JSON API (`/api/datasets`, `episodes`, `curves`, `stages`, `stage_rules`, `frame`, `review`, `review/edit`, `label`, `rebuild`, `builds`,
+- `server.py`: server and JSON API (`/api/datasets`, `episodes`, `curves`, `stages`, `stageview`, `stage_rules`, `frame`, `review`, `review/edit`, `label`, `rebuild`, `builds`,
   `quality`, `eval`, `history`, `curate/*`, plus `/video`). `python server.py` runs its self-check first.
-- `index.html`: top bar and styles; `app.js`: the four pages (old `#curate` links open the training-set quality page).
+- `index.html`: top bar and styles; `app.js`: the five pages (old `#curate` links open the training-set quality page).
 - `curate.py`: curate metrics, conditions and command line; `presets/`: curate presets (in git).
 - Generated at run time (not in git): `outputs/dataset_viewer/` (still and score caches, spec backups, build records and logs).

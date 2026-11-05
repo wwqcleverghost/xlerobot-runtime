@@ -74,7 +74,7 @@ function picker(mode, ids, filter, onchange, max = Infinity) {
         <span>${esc(d.id)}</span><span class="mute">${d.episodes} 条 · ${d.dims} 维 · ${d.revision ? d.revision.slice(0, 8) : '本地'}${d.building ? ' · <b class="err">构建中</b>' : ''}</span></label>`;
       const demo = list.filter(d => !d.eval), evl = list.filter(d => d.eval);
       $('.list', pop).innerHTML = (demo.length ? '<h4>训练 / 示范数据集</h4>' + demo.map(row).join('') : '') +
-        (evl.length ? '<h4>评测数据集（有 success.csv，没有人工接管）</h4>' + evl.map(row).join('') : '');
+        (evl.length ? '<h4>评测数据集</h4>' + evl.map(row).join('') : '');
     };
     draw();
     $('input', pop).oninput = draw;
@@ -363,7 +363,7 @@ function openModal(list, k, start) {
       <span class="mute">${k + 1}/${list.length} · A/D 上下条 · 空格播放 · Esc 关闭</span><button style="margin-left:auto" class="x">关闭</button></header>
       <div class="pl"></div><div class="cv"></div><div class="labeler"></div>`;
     p = new Player($('.pl', dlg), {...e, start: start ?? e.start ?? 0});
-    cv = new Curves($('.cv', dlg), {id: e.id, ep: e.ep, n: e.n, arm: e.arm, marks: e.fail != null ? {fail: e.fail} : {},
+    cv = new Curves($('.cv', dlg), {id: e.id, ep: e.ep, n: e.n, arm: e.arm, marks: e.marks || (e.fail != null ? {fail: e.fail} : {}),
                                     onseek: f => { p.pause(); p.seek(f); }});
     p.onframe = f => cv.setFrame(f);
     cv.setFrame(p.f);
@@ -1234,10 +1234,162 @@ async function pageEval(q, view, tools) {
   detail();
 }
 // =====================================================================================================
+// page 5: stages / progress of eval trials. One row per trial on a shared time axis: the rule stage (the live input from
+// stages.csv, else fine9 recomputed), the model's own stage guess, progress 0..1, going back ▼, skipped stages ▲,
+// and the task end (eval-scoring/mark_end.py) with the rest greyed out (not cut).
+// =====================================================================================================
+const segMarks = segs => {  // [frame, 'back' | 'skip'] where a run goes down / skips a stage (runs of -1 = no value are ignored)
+  const out = []; let prev = null;
+  for (const [a, , g] of segs || []) {
+    if (g < 0) continue;
+    if (prev != null && g < prev) out.push([a, 'back']); else if (prev != null && g > prev + 1) out.push([a, 'skip']);
+    prev = g;
+  }
+  return out;
+};
+const segProgress = (segs, n, shares) => {  // stage runs -> per-frame progress (stage_progress.py, fixed v6 shares)
+  const start = shares.map((_, i) => shares.slice(0, i).reduce((x, y) => x + y, 0)), p = new Array(n).fill(null);
+  for (const [a, b, g] of segs || []) if (g >= 0) for (let f = a; f < b && f < n; f++) p[f] = start[g] + shares[g] * (f - a) / (b - a);
+  return p;
+};
+const JUMP = 0.1;  // ponytail: a progress step > 0.1 in one frame counts as a jump; tune once real progpred evals exist
+const valueJumps = v => { const out = []; if (v) for (let f = 1; f < v.length; f++) if (v[f] != null && v[f - 1] != null && Math.abs(v[f] - v[f - 1]) > JUMP) out.push(f); return out; };
+
+async function pageStage(q, view, tools) {
+  let ids = (q.ds ? q.ds.split(',') : LS.get('stage_ds', [])).filter(i => G.by[i] && G.by[i].eval);
+  const setIds = (v, fromPicker) => { ids = v; LS.set('stage_ds', ids); setQuery({ds: ids.join(',')}); if (!fromPicker) picker('multi', ids, d => d.eval, setIds); draw(); };
+  picker('multi', ids, d => d.eval, setIds);
+  tools.innerHTML = `<span class="legend" id="sleg"></span><span class="legend"><span><i style="background:var(--ink);height:2px"></i>规则进度</span>
+    <span><i style="background:var(--h);height:2px"></i>模型进度</span><span><b style="color:var(--bad)">▼</b>倒退</span><span><b style="color:var(--orange)">▲</b>跳阶段 / 进度跳变</span><span>实心 = 模型，空心 = 规则</span>
+    <span><i style="background:#8886"></i>结束后</span></span>`;
+  const rows = [];
+  G.cleanup.push(() => rows.forEach(r => r.ro.disconnect()));
+  async function draw() {
+    rows.splice(0).forEach(r => r.ro.disconnect());
+    view.innerHTML = ids.length ? '' : '<p class="mute">选一个或多个评测数据集。</p>';
+    const data = [];
+    for (const id of ids) {
+      const box = el(`<div class="panel"><h3>${esc(id)}</h3><p class="mute">加载中…</p></div>`);
+      view.append(box);
+      try { data.push([box, ...await Promise.all([api('/api/stageview?id=' + encodeURIComponent(id)), episodeInfo(id)])]); }
+      catch (e) { box.innerHTML = `<h3>${esc(id)}</h3><p class="err">${esc(e.message)}</p>`; }
+    }
+    if (!data.length) return;
+    const names = data[0][1].names, sumBox = el('<div class="panel"><h3>模型对比</h3><div class="tb"></div></div>');
+    view.prepend(sumBox);
+    $('#sleg').innerHTML = names.map((nm, g) => `<span><i style="background:var(--s${g % 10 + 1})"></i>${g} ${esc(nm)}</span>`).join('');
+    const N = Math.max(...data.flatMap(([, d]) => d.episodes.map(e => e.n)));  // one time axis for every row
+    let queue = Promise.resolve();  // fine9 recompute decodes wrist videos: one episode at a time
+    for (const [box, d, info] of data) {
+      const back = (k) => d.episodes.reduce((s, e) => s + segMarks(e[k]).filter(m => m[1] === 'back').length, 0);
+      box.innerHTML = `<h3>${esc(d.id)} <span class="mute" style="font-weight:400">· ${d.episodes.length} 条
+        · 规则阶段：${d.has_log ? '评测时实时输入（stages.csv）' : '离线重算 fine9（这次评测没有 stages.csv）'}
+        · 结束：${d.has_end ? 'episode_end.csv' : d.has_log ? '按 stages.csv 现算' : '<span class="err">未标注，运行 eval-scoring/mark_end.py</span>'}
+        ${d.has_log ? `· 模型倒退共 <b style="color:var(--bad)">${back('pred')}</b> 次` : ''}</span></h3><div class="srows"></div>`;
+      const list = d.episodes.map(e => ({...info[e.ep], ...e, id: d.id, marks: e.end == null ? {} : {keep: [0, e.end]},
+        title: `<span class="chip ${e.success ? 'ok' : 'bad'}">${e.success ? '成功' : '失败'}</span> 结束 ${e.end == null ? '未标注' : sec(e.end) + ' 秒（' + e.how + '）'} · 录制 ${sec(e.n)} 秒`}));
+      d.episodes.forEach((e, k) => {
+        const r = el(`<div class="srow"><div class="slab"><b>T${e.ep + 1}</b> <span class="chip ${e.success ? 'ok' : 'bad'}">${e.success ? '✓' : '✗'}</span>
+          <span title="结束（${e.how}${e.marked ? '' : '，未写入 episode_end.csv'}）/ 录制">${e.end == null ? '–' : (e.end / FPS).toFixed(1)} / ${(e.n / FPS).toFixed(1)} s</span><span class="cnt"></span></div><canvas></canvas></div>`);
+        $('.srows', box).append(r);
+        const row = {id: d.id, e, cv: $('canvas', r), rule: e.live, ro: new ResizeObserver(() => paint(row))};
+        rows.push(row); row.ro.observe(r);
+        if (!row.rule) queue = queue.then(() => getStages(d.id, e.ep, 'fine9').then(s => { row.rule = s.segs; paint(row); summary(); }).catch(err => { row.err = err.message; paint(row); }));
+        const at = ev => { const b = row.cv.getBoundingClientRect(); return Math.round((ev.clientX - b.left) / b.width * N); };
+        row.cv.onmousemove = ev => {
+          const f = at(ev); if (f >= e.n) return tip(ev, '');
+          const run = segs => { const s = (segs || []).find(([a, b]) => f >= a && f < b); return s && s[2] >= 0 ? names[s[2]] : '–'; };
+          const pr = e.prob && e.prob[f], pg = e.progress && e.progress[f];
+          tip(ev, `${sec(f)} 秒${e.end != null && f >= e.end ? '（结束后）' : ''}\n规则 ${run(row.rule)}` + (e.pred ? `\n模型 ${run(e.pred)}` : '') +
+            (pr != null ? ` p=${pr.toFixed(2)}` : '') + (pg != null ? `\n模型进度 ${pg.toFixed(2)}` : '') + '\n点击播放');
+        };
+        row.cv.onmouseleave = ev => tip(ev, '');
+        row.cv.onclick = ev => openModal(list, k, Math.min(at(ev), e.n - 1));
+      });
+    }
+    summary();
+    function summary() {  // one line per model: success, how far trials get, time, going back, model vs rule agreement
+      const lab = segs => { const m = (segs || []).filter(s => s[2] >= 0).map(s => s[2]); return m.length ? Math.max(...m) : -1; };
+      const per = (rs, k) => rs.length ? rs.reduce((t, r) => t + segMarks(k(r)).filter(m => m[1] === 'back').length, 0) / rs.length : null;
+      const at = (segs, n) => { const a = new Int8Array(n).fill(-1); for (const [x, y, g] of segs || []) a.fill(g, x, Math.min(y, n)); return a; };
+      const out = data.map(([box, d]) => {
+        const rs = rows.filter(r => r.id === d.id), n = rs.length, ok = rs.filter(r => r.e.success).length, ready = rs.filter(r => r.rule);
+        const reach = names.map((_, g) => ready.filter(r => lab(r.rule) >= g).length);
+        const t = rs.filter(r => r.e.success && r.e.end != null).map(r => r.e.end / FPS).sort((a, b) => a - b);
+        const withPred = rs.filter(r => r.e.pred && r.rule);
+        let same = 0, both = 0;
+        withPred.forEach(r => { const end = r.e.end ?? r.e.n, a = at(r.rule, end), b = at(r.e.pred, end); for (let f = 0; f < end; f++) if (a[f] >= 0 && b[f] >= 0) { both++; same += a[f] === b[f]; } });
+        const BW = 13, BH = 26;
+        const funnel = `<svg width="${names.length * BW}" height="${BH}" style="vertical-align:middle">` + names.map((nm, g) => {
+          const h = ready.length ? reach[g] / ready.length * BH : 0;
+          return `<rect x="${g * BW}" y="0" width="${BW - 2}" height="${BH}" fill="var(--soft)"/><rect x="${g * BW}" y="${BH - h}" width="${BW - 2}" height="${h}" fill="var(--s${g % 10 + 1})"><title>${esc(nm)}：${reach[g]}/${ready.length} 条走到</title></rect>`;
+        }).join('') + '</svg>';
+        const bar = (v, col) => `<svg width="60" height="8" style="vertical-align:middle"><rect width="60" height="8" rx="2" fill="var(--soft)"/><rect width="${60 * v}" height="8" rx="2" fill="${col}"/></svg>`;
+        return {box, id: d.id, n, ok, funnel, pending: n - ready.length,
+          time: t.length ? t[t.length >> 1] : null, tmin: t[0], tmax: t[t.length - 1],
+          rback: per(ready, r => r.rule), pback: withPred.length ? per(withPred, r => r.e.pred) : null,
+          agree: both ? same / both : null, bar};
+      });
+      const short = id => id.replace(/^eval[-/]/, '').replace(/_\d{8}_\d{6}$/, '');
+      table($('.tb', sumBox), out, [
+        ['id', '模型', r => `<span class="nm" title="${esc(r.id)}">${esc(short(r.id))}</span>`],
+        ['ok', '成功', r => `${r.bar(r.n ? r.ok / r.n : 0, 'var(--ok)')} <b>${r.ok}</b>/${r.n}`, r => r.n ? r.ok / r.n : 0],
+        ['funnel', '走到各阶段的试次', r => r.funnel + (r.pending ? ` <span class="mute">算阶段中 ${r.pending}</span>` : ''), r => r.ok],
+        ['time', '成功用时（中位）', r => r.time == null ? '–' : `<b>${r.time.toFixed(1)}</b> s <span class="mute">${r.tmin.toFixed(1)}–${r.tmax.toFixed(1)}</span>`, r => r.time],
+        ['rback', '规则倒退 / 条', r => r.rback == null ? '–' : `<b style="color:${r.rback ? 'var(--bad)' : 'inherit'}">${r.rback.toFixed(1)}</b>`, r => r.rback],
+        ['pback', '模型倒退 / 条', r => r.pback == null ? '<span class="mute">无输出</span>' : `<b style="color:${r.pback ? 'var(--bad)' : 'inherit'}">${r.pback.toFixed(1)}</b>`, r => r.pback],
+        ['agree', '模型 = 规则', r => r.agree == null ? '<span class="mute">无输出</span>' : `${r.bar(r.agree, 'var(--h)')} ${(100 * r.agree).toFixed(0)}%`, r => r.agree],
+      ], r => r.box.scrollIntoView({behavior: 'smooth'}));
+    }
+    function paint(row) {
+      const {e, cv} = row, W = cv.clientWidth, H = 74, dpr = devicePixelRatio || 1;
+      if (!W) return;
+      cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
+      const c = cv.getContext('2d'), x = f => f / N * W, css = getComputedStyle(document.body), col = k => css.getPropertyValue(k);
+      const shares = data[0][1].shares, B1 = [0, 12], B2 = [14, 26], P = [30, H - 2], py = v => P[1] - v * (P[1] - P[0]);
+      c.scale(dpr, dpr);
+      c.fillStyle = col('--soft'); c.fillRect(0, 0, x(e.n), H);
+      c.strokeStyle = '#8882'; c.lineWidth = 1;
+      c.fillStyle = col('--mute'); c.font = '9px system-ui'; c.textBaseline = 'top';
+      for (let s = 5 * FPS; s < e.n; s += 5 * FPS) { c.beginPath(); c.moveTo(x(s), 0); c.lineTo(x(s), H); c.stroke(); c.fillText(s / FPS + 's', x(s) + 2, P[0]); }  // every 5 s
+      [0.25, 0.5, 0.75].forEach(v => { c.beginPath(); c.moveTo(0, py(v)); c.lineTo(x(e.n), py(v)); c.stroke(); });
+      const band = (segs, [y0, y1]) => { for (const [a, b, g] of segs || []) if (g >= 0) { c.fillStyle = col(`--s${g % 10 + 1}`); c.fillRect(x(a), y0, x(b) - x(a), y1 - y0); } };
+      band(row.rule, B1); band(e.pred, B2);
+      if (e.prob) { c.fillStyle = col('--soft'); e.prob.forEach((p, f) => { if (p != null && p < 1) { c.globalAlpha = 1 - p; c.fillRect(x(f), B2[0], x(f + 1) - x(f) + .5, B2[1] - B2[0]); } }); c.globalAlpha = 1; }  // faint = unsure
+      c.fillStyle = col('--mute'); c.font = '10px system-ui'; c.textBaseline = 'middle';
+      if (!row.rule) c.fillText(row.err ? '阶段计算失败：' + row.err : '计算阶段中…', 4, 6);
+      if (!e.pred) c.fillText('（没有模型阶段输出）', 4, 20);
+      const line = (p, color, w) => {
+        c.strokeStyle = color; c.lineWidth = w; c.beginPath(); let on = false;
+        p.forEach((v, f) => { if (v == null) { on = false; return; } on ? c.lineTo(x(f + .5), py(v)) : c.moveTo(x(f + .5), py(v)); on = true; });
+        c.stroke();
+      };
+      line(segProgress(row.rule, e.n, shares), col('--ink'), 1.3);
+      const mp = e.progress || (e.pred ? segProgress(e.pred, e.n, shares) : null);  // *-progpred: its own output; else from its stages
+      if (mp) line(mp, col('--h'), 1.6);
+      // marks sit on the bottom edge of the progress plot: filled = model, hollow = rule
+      const tri = (f, up, color, fill) => {
+        const X = x(f), y = H - 9; c.beginPath();
+        if (up) { c.moveTo(X, y); c.lineTo(X - 5, y + 8); c.lineTo(X + 5, y + 8); } else { c.moveTo(X, y + 8); c.lineTo(X - 5, y); c.lineTo(X + 5, y); }
+        c.closePath(); if (fill) { c.fillStyle = color; c.fill(); } else { c.strokeStyle = color; c.lineWidth = 1.5; c.stroke(); }
+      };
+      const cnt = {back: 0, skip: 0};
+      [[row.rule, false], [e.pred, true]].forEach(([segs, fill]) => segMarks(segs).forEach(([f, k]) => { cnt[k]++; tri(f, k === 'skip', col(k === 'back' ? '--bad' : '--orange'), fill); }));
+      if (e.progress) valueJumps(e.progress).forEach(f => { cnt.skip++; tri(f, true, col('--orange'), true); });
+      if (e.end != null) {  // after the task end: greyed, not cut
+        c.fillStyle = '#8886'; c.fillRect(x(e.end), 0, x(e.n) - x(e.end), H);
+        c.strokeStyle = col('--ink'); c.setLineDash([3, 2]); c.beginPath(); c.moveTo(x(e.end), 0); c.lineTo(x(e.end), H); c.stroke(); c.setLineDash([]);
+      }
+      $('.cnt', cv.parentNode).innerHTML = (cnt.back ? ` <b style="color:var(--bad)">▼${cnt.back}</b>` : '') + (cnt.skip ? ` <b style="color:var(--orange)">▲${cnt.skip}</b>` : '');
+    }
+  }
+  draw();
+}
+// =====================================================================================================
 // boot
 // =====================================================================================================
 
-const PAGES = {review: pageReview, batch: pageBatch, quality: pageQuality, eval: pageEval, curate: pageQuality};  // #curate: old links
+const PAGES = {review: pageReview, batch: pageBatch, quality: pageQuality, eval: pageEval, stage: pageStage, curate: pageQuality};  // #curate: old links
 async function show() {
   G.cleanup.splice(0).forEach(f => f());
   clearTimeout(G.buildT); clearTimeout(G.histT);

@@ -35,6 +35,7 @@ for p in ("src", "src/lerobot/scripts", "examples/xlerobot", "docs/workflows/eva
     sys.path.insert(0, str(REPO / p))
 from lerobot.scripts.lerobot_dataset_quality import episode_metrics, flag_outliers  # noqa: E402
 import report  # noqa: E402
+from mark_end import reset_start, task_end  # noqa: E402
 from make_grid import first_arm  # noqa: E402
 from review_page import NAMES, pauses, propose, snaps  # noqa: E402
 from score import GR, runs  # noqa: E402
@@ -45,6 +46,7 @@ import curate  # noqa: E402
 
 HOME = Path(os.path.expanduser("~/.cache/huggingface/lerobot"))
 OWNER = HOME / "wwqcleverghost"
+LOCAL_EVAL = REPO / "outputs/eval"  # eval runs recorded here and not uploaded yet: id "eval/<run>"
 SPECS = REPO / "examples/xlerobot"
 LABELS = SPECS / "dataset_labels.json"
 OUT = REPO / "outputs/dataset_viewer"
@@ -67,6 +69,8 @@ def scan():
             root = info.parent.parent
             rel = str(root.relative_to(OWNER))
             out.append(dict(id=re.sub(r"/dataset$", "", rel), root=root))
+    for info in sorted(LOCAL_EVAL.glob("*/dataset/meta/info.json")):
+        out.append(dict(id="eval/" + info.parents[2].name, root=info.parent.parent))
     return out
 
 
@@ -88,7 +92,7 @@ def is_eval(root):
 
 
 def root_of(ds_id):
-    p = Path(ds_id) if os.path.isabs(ds_id) else OWNER / ds_id
+    p = Path(ds_id) if os.path.isabs(ds_id) else LOCAL_EVAL / ds_id[5:] if ds_id.startswith("eval/") else OWNER / ds_id
     p = p / "dataset" if (p / "dataset/meta/info.json").exists() else p
     p = p.resolve()
     assert (p / "meta/info.json").exists(), f"no dataset at {ds_id}"
@@ -232,6 +236,43 @@ def stages(ds_id, ep, rule):
     ed = stage_labels.edits(ds_id, ep) if rule == "fine9" else {}
     return dict(names=names, segs=stage_labels.segments(stage_labels.apply_edits(lab, ed)), auto=stage_labels.segments(lab),
                 edits=ed, editable=rule == "fine9")
+
+
+def stage_view(ds_id):
+    """Per episode of an eval: the task end (episode_end.csv of eval-scoring/mark_end.py; without it, computed here from the
+    live stage of stages.csv, else None: mark_end.py recomputes fine9 from the videos, too slow for this request)
+    and, when the eval wrote stages.csv (stage models, lerobot_record_eval.save_stage_log), the live rule stage fed to the
+    model and the model's own guess as runs, plus per frame its probability and (*-progpred) its progress."""
+    o = load(ds_id)
+    root = o["root"]
+    ends = pd.read_csv(root / "episode_end.csv").set_index("episode") if (root / "episode_end.csv").exists() else None
+    log = pd.read_csv(root / "stages.csv") if (root / "stages.csv").exists() else None
+    out = []
+    for ep in o["eps"].index:
+        a, st = ep_arrays(o, ep)
+        n, ok = len(a), bool((o["success"] or {}).get(int(ep), 0))
+        e = dict(ep=int(ep), n=n, success=ok, end=None, how=None, marked=False, live=None, pred=None, prob=None, progress=None)
+        g = None if log is None else log[log.episode == ep]
+        rule = None
+        if g is not None and len(g):
+            rule, pred = np.full(n, -1), np.full(n, -1)
+            f = g.frame.values.clip(0, n - 1)
+            rule[f], pred[f] = g.rule.values, g.pred.values
+            e["live"] = stage_labels.segments(rule) if (rule >= 0).any() else None
+            e["pred"] = stage_labels.segments(pred) if (pred >= 0).any() else None
+            for k in ("prob", "progress"):
+                if k not in g:  # stages.csv of 2026-11-05 21:43 (v8 stagelabel) has one "value" column, empty there
+                    continue
+                v = np.full(n, np.nan)
+                v[f] = g[k].values
+                e[k] = None if np.isnan(v).all() else np.round(v, 3).tolist()
+        if ends is not None and ep in ends.index:
+            e.update(end=int(ends.loc[ep, "end_frame"]), how=ends.loc[ep, "how"], marked=True)
+        elif e["live"]:
+            e["end"], e["how"] = task_end(st, a, reset_start(rule))
+        out.append(e)
+    return dict(id=ds_id, fps=o["fps"], names=stage_labels.STAGES, shares=stage_labels.PROG_SHARES.tolist(),
+                has_log=log is not None, has_end=ends is not None, episodes=out)
 
 
 def set_stage_edit(ds_id, ep, stage, start):
@@ -726,7 +767,7 @@ def evaluation(ds_id):
 
 
 def version(ds_id):
-    m = re.match(r"(?:eval-)?v(\d+)-", ds_id)  # test sets carry an eval- prefix (naming README, 2026-10-30)
+    m = re.match(r"(?:eval[-/])?v(\d+)-", ds_id)  # test sets carry an eval- prefix (naming README, 2026-10-30); eval/ = outputs/eval
     return int(m[1]) if m else 0
 
 
@@ -877,6 +918,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/episodes": lambda: episodes(q["id"]),
             "/api/curves": lambda: curves(q["id"], int(q["ep"])),
             "/api/stages": lambda: stages(q["id"], int(q["ep"]), q["rule"]),
+            "/api/stageview": lambda: stage_view(q["id"]),
             # std9 (the reference) stays on the command line (--compare); the page shows fine9, what training uses
             "/api/stage_rules": lambda: {k: dict(names=v[0], desc=v[2], vision=v[3]) for k, v in stage_labels.RULES.items() if k != "std9"},
             "/api/specs": spec_list,
@@ -959,7 +1001,7 @@ def selfcheck():
     assert fail_time(st, ac, 30) == 40 - 15, fail_time(st, ac, 30)
     assert fail_time(np.zeros((200, 12)), np.zeros((200, 12)), 30) == 110
     assert version("v6-handover-curated") == 6 and version("v10-x") == 10 and version("handover2") == 0
-    assert version("eval-v4-flow_h16_s8") == 4 and version("scores-v4-v5") == 0
+    assert version("eval-v4-flow_h16_s8") == 4 and version("scores-v4-v5") == 0 and version("eval/v6-flow_h16_s8_x") == 6
     stage_labels.selfcheck()
 
 

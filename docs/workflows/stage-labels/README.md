@@ -230,7 +230,8 @@ In real-robot eval the model needs the stage of every frame. `lerobot_record_eva
 **automatically**: when the model's inputs include `observation.environment_state` (a model trained on a `*-stagelabel` dataset), each frame
 `stage_labels.LiveStage` (joint readings + the wrist images `left_wrist` / `right_wrist` + the command sent last) computes the `fine9` stage
 and feeds it to the model; startup prints `Stage input on: ...`. It keeps updating during a human takeover, so the stage is current when the
-policy resumes. The stage only goes to the model and is not written into the recorded test set (the same rule recomputes it offline).
+policy resumes. The stage is not written into the recorded data (the same rule recomputes it offline); `lerobot_record_eval.py` also
+logs it per frame, with the model's own stage guess, to `stages.csv` next to `success.csv`, which the dataset viewer's "阶段 / 进度" page draws.
 No extra flag; no `Stage input on` line means the model has no such input.
 
 ## Command line

@@ -2,8 +2,8 @@
 
 English: [README.md](README.md)
 
-一个本地网页，四个页面共用一个顶栏：**裁剪审阅**、**批量播放**、**训练集质量 / 筛选**、**测试集打分**。
-数据集从 `~/.cache/huggingface/lerobot/wwqcleverghost/` 自动列出（含评测数据集，嵌套在 `<dir>/dataset/`、`<dir>/<set>/dataset/`
+一个本地网页，五个页面共用一个顶栏：**裁剪审阅**、**批量播放**、**训练集质量 / 筛选**、**测试集打分**、**阶段 / 进度**。
+数据集从 `~/.cache/huggingface/lerobot/wwqcleverghost/` 自动列出，还没上传的评测 `outputs/eval/<run>/dataset/` 以 `eval/<run>` 列出（含评测数据集，嵌套在 `<dir>/dataset/`、`<dir>/<set>/dataset/`
 里的也会找到；旧名字的符号链接跳过；只有元数据、没有数据文件的目录不列出）。有 `success.csv` 的算评测数据集；有人工接管记录 `interventions.csv` 的（`*_takeover`）算 DAgger 训练数据，列在训练数据集里，不进测试集打分。顶栏显示数据集的 HF revision（本地构建的显示构建时间和 git commit）和当前代码的 git commit。
 
 ```bash
@@ -150,6 +150,30 @@ PYTHONPATH=src python docs/workflows/dataset-viewer/curate.py --datasets raw-han
 lerobot_dataset_quality.py）一改就重算。第一次打开历史表时后台线程算缺的（全部约 1 分钟），表格边算边更新，之后打开不到 1 秒。
 改了 `server.py` 里 `_quality` / `_evaluation` 的输出要把 `SCORE_VERSION` 加一。
 
+## 5. 阶段 / 进度（`#stage`）
+
+给阶段模型用（阶段输入、阶段头、`*-stagepred`、`*-progpred`，见 [`../stage-labels/README.zh.md`](../stage-labels/README.zh.md)）。
+选一个或多个评测。最上面是**模型对比**，每个评测一行（可排序；点一行跳到它的试次）：成功 k/n；走到 9 个阶段各有几条
+（每个阶段一根柱，高度 = 走到的试次比例，悬停看条数）；成功试次的用时中位数（到任务结束，见下）和最短–最长；
+每条的规则 / 模型倒退次数；"模型 = 规则" = 结束前模型阶段和规则阶段相同的帧占比。
+
+下面每个试次一行，所有行共用一条时间轴（每 5 秒一条竖线），长短一眼可比：
+
+- 上面的色带：规则阶段。评测写了 `stages.csv` 时是评测时实时喂给模型的 `fine9` 阶段，否则离线重算 `fine9`
+  （第一次要解码腕部视频，一条一条算）。
+- 第二条色带：模型自己判断的阶段（阶段头 / `*-stagepred` 取最大 / `*-progpred` 进度换算成阶段）；概率低的地方颜色变淡。
+  "（没有模型阶段输出）"= 这次评测没有 `stages.csv`，或模型没有阶段输出。
+- 0..1 曲线：黑线 = 规则阶段的进度，蓝线 = 模型的进度（`*-progpred` 用它自己的输出，其他由它的阶段换算）。
+  每个阶段占的进度用固定的 v6 比例 `stage_labels.PROG_SHARES`。
+- 标记画在曲线区下边缘（实心 = 模型，空心 = 规则）：红 ▼ = 阶段倒退，橙 ▲ = 跳过阶段，或预测进度一帧内变化 > 0.1；
+  试次旁边是次数（▼n ▲n），面板标题里是模型倒退总次数。
+- 虚线 = 任务结束（走到复位的试次一定在复位段里），之后变灰（不截断）：来自 [`../eval-scoring/mark_end.py`](../eval-scoring/README.zh.md)
+  写的 `episode_end.csv`；没有时用 `stages.csv` 现算，再没有就不画（运行 mark_end.py，它会用视频离线重算 fine9）。左边显示 结束 / 录制 秒数。
+- 悬停：时间、两种阶段、概率 / 进度。点击：从那个时刻打开这个试次的视频和关节曲线，结束之后变灰。
+
+`stages.csv`（episode, frame, rule, pred, prob, progress；-1 / 空 = 没有）由 `lerobot_record_eval.py` 在每个保存的试次后写在
+`success.csv` 旁边，只有带阶段输入或输出的模型才写（`eval_remote_trials.py` 还没有）。
+
 ## 自动阶段标签（顶栏"阶段"）
 
 顶栏的"阶段"下拉框选一个规则后，每组关节曲线上方画一条彩色阶段条（裁剪审阅卡片和各页面的大图都有），悬停显示阶段名和时间段。
@@ -165,8 +189,8 @@ lerobot_dataset_quality.py）一改就重算。第一次打开历史表时后台
 
 ## 文件
 
-- `server.py`：服务和 JSON API（`/api/datasets`、`episodes`、`curves`、`stages`、`stage_rules`、`frame`、`review`、`review/edit`、`label`、`rebuild`、`builds`、
+- `server.py`：服务和 JSON API（`/api/datasets`、`episodes`、`curves`、`stages`、`stageview`、`stage_rules`、`frame`、`review`、`review/edit`、`label`、`rebuild`、`builds`、
   `quality`、`eval`、`history`、`curate/*`，以及 `/video`）。`python server.py` 启动时先跑自检。
-- `index.html`：顶栏和样式；`app.js`：四个页面（旧链接 `#curate` 会打开训练集质量页）。
+- `index.html`：顶栏和样式；`app.js`：五个页面（旧链接 `#curate` 会打开训练集质量页）。
 - `curate.py`：筛选的指标、条件和命令行；`presets/`：筛选预设（进 git）。
 - 运行时生成（不进 git）：`outputs/dataset_viewer/`（静帧和分数缓存、spec 备份、构建记录和日志）。

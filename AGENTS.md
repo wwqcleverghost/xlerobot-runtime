@@ -23,11 +23,11 @@
 # 工作流程文档（做相关任务前先读对应的 README.md）
 
 - `docs/workflows/naming/` — 训练集 `v<N>-<内容>`、模型 `v<N>-<方法>_<参数>`、测试集 `eval-<模型名>`，上传和改名前先读。
-- `docs/workflows/eval-scoring/` — 评测打分：总分 = 0.5 完成度（分阶段通过率）+ 0.5 质量（抖动、用时、停顿 vs 人类），全部带置信区间，用 report.py 出表和图。
+- `docs/workflows/eval-scoring/` — 评测打分：总分 = 0.5 完成度（分阶段通过率）+ 0.5 质量（抖动、用时、停顿 vs 人类），全部带置信区间，用 report.py 出表和图；`mark_end.py` 标注每个试次真实结束帧（`episode_end.csv`，不截断数据）。
 - `docs/workflows/eval-grid-video/` — 把一次评测（10 个试次）合成 2x5 网格视频。
 - `docs/workflows/handover-dataset-curation/` — 检查、筛选、裁剪、合并交接数据集；含数据集质量检测标准（jerk、峰值速度、停顿）。
 - `docs/workflows/lab-training-queue/` — 在实验室服务器上启动、排队、续训、监控训练。
-- `docs/workflows/dataset-viewer/` — 本地数据集网页工具：裁剪审阅/微调并重建、批量播放、训练集质量、测试集打分（含历史对比）、筛选高质量数据（curate.py，网页"训练集质量 / 筛选"页；给 agent 的步骤见 `.claude/skills/select-high-quality-data/SKILL.md`）。
+- `docs/workflows/dataset-viewer/` — 本地数据集网页工具：裁剪审阅/微调并重建、批量播放、训练集质量、测试集打分（含历史对比）、阶段 / 进度（阶段模型的规则阶段、模型阶段、进度、倒退 / 跳变，评测结束点）、筛选高质量数据（curate.py，网页"训练集质量 / 筛选"页；给 agent 的步骤见 `.claude/skills/select-high-quality-data/SKILL.md`）。
 - `docs/workflows/stage-labels/` — 逐帧阶段标签（9 阶段：A前往…复位）：事件定义、`fine9`（训练输入）/ `std9`（核对）、阈值和准确度；改阶段规则或用阶段做模型输入前先读。
   - 用 `*-stagelabel` 数据集训练的模型有输入 `observation.environment_state`：真机评测（`lerobot_record_eval.py`、`eval_remote_trials.py`）会**自动**开启实时阶段计算，启动时打印 `Stage input on`，需要两路腕部相机；没打印就是没开。
   - 改了 `examples/xlerobot/stage_labels.py` 的规则，已加过标签的数据集要用 `add_stage_labels.py --dataset <名字>-stagelabel` 重新计算，否则训练标签和评测时算的不一致。

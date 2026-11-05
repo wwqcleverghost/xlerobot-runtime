@@ -76,6 +76,26 @@ PYTHONPATH=src:docs/workflows/eval-scoring:docs/workflows/handover-dataset-curat
 历史：2026-10-23 之前每个试次打 0–5 分，第一个失败阶段之后全部记 0，平滑度单独报告。
 那时的分数在 HF `wwqcleverghost/scores-v4-v5`。
 
+## 可选：每个试次的任务结束时间
+
+试次是人按键结束的，会早几秒或晚几秒。`mark_end.py` 写 `<评测目录>/episode_end.csv`（episode, end_frame, frames, how），不截断任何数据：
+
+still = 从这一帧起所有手臂关节（指令和从臂）都在最后姿态 3 个单位以内：机器人已经停了，之后是在等人按键。
+
+- `reset`：走到了复位（fine9 第 8 阶段：评测有 `stages.csv` 就用实时阶段，否则用腕部视频离线重算）：结束 = still 和复位第一帧 + 1
+  中较晚的那个，所以结束点一定在复位段里（用户 2026-11-05）。
+- `still`：没走到复位：结束 = still。
+- `human`：机器人一直动到最后 0.5 秒内；结束 = 录制长度。
+
+数据集网页的"阶段 / 进度"页画出这个结束点，之后变灰。打分不用它，只用于查看（用户 2026-11-05 决定）。
+
+```bash
+PYTHONPATH=src python docs/workflows/eval-scoring/mark_end.py ~/.cache/huggingface/lerobot/wwqcleverghost/eval-v8-flow_h16_s8
+```
+
+2026-11-05（git 79bf9dd6 + 未提交修改）：`eval-v8-flow_h16_s8` 4 placed / 5 still / 1 human；`eval-v6-flow_h16_s8`
+31 placed / 16 still / 3 human。成功的试次在松手后多录了 1.2–10.1 秒；v6 有三个失败试次 0.6 秒就停了（没离开起点），却录了 13.9–44.5 秒。
+
 ## 可选：逐帧阶段标签
 
 `score.stage_frames(state, action)` 给每帧一个标签：0 前往，1 A 臂抓着，2 两手同时抓，3 B 臂抓着，4 已放下（B 抓完后张开）。
