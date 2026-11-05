@@ -107,9 +107,11 @@ python -m lerobot.record \
 ```
 """
 
+import copy
 import csv
 import json
 import logging
+import sys
 import math
 import threading
 import time
@@ -380,7 +382,9 @@ def record_loop(
     # [eval] stage input: a policy trained with observation.environment_state (docs/workflows/stage-labels) gets the live
     # fine9 stage each frame; it is turned on by the policy's inputs, not by a flag, and is fed to the policy only (not recorded)
     stage = live_stage(policy)
-    last_cmd, stage_now = None, None
+    last_cmd, stage_now, pred_stage = None, None, None
+    # [eval] per-frame [frame, rule stage, model stage, prob, progress] of stage models, saved to stages.csv (save_stage_log)
+    events["stage_log"] = log = []
     raw_hist = []  # [eval] previous two policy outputs, for smooth_arm_action
     state_range = train_state_range(preprocessor)
     events["takeover"] = False
@@ -405,7 +409,9 @@ def record_loop(
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
         if stage is not None:  # [eval] every frame, takeover frames too, so the stage is current when the policy resumes
-            stage_now = stage(obs, last_cmd)
+            prev_stage, stage_now = stage_now, stage(obs, last_cmd)
+            if prev_stage is None or prev_stage.argmax() != stage_now.argmax():
+                print(f"[stage] {timestamp:6.2f}s  {int(stage_now.argmax())}", flush=True)  # 0-8 = STAGES order
 
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
@@ -443,6 +449,7 @@ def record_loop(
             continue  # alignment took time; start the next frame from a fresh observation
 
         # Get action from either policy or teleop
+        pred_now, prob_now, prog_now = -1, float("nan"), float("nan")  # the model's own stage guess (-1: none / human frame)
         if human:
             leader = teleop.get_action()
             command = {k: v + offset.get(k, 0.0) for k, v in leader.items()}
@@ -464,6 +471,33 @@ def record_loop(
             )
 
             act_processed_policy: RobotAction = make_robot_action(action_values, dataset.features)
+            extra = action_values.reshape(-1)[len(dataset.features[ACTION]["names"]):]
+            head = getattr(getattr(policy, "diffusion", None), "stage_head_pred", None)
+            if head is not None:  # [eval] stagehead: its own stage guess (updated once per chunk) vs the rule's input
+                pred = int(head[0].argmax())
+                pred_now, prob_now = pred, float(head[0, pred])
+                if pred != pred_stage:
+                    print(f"[head]  {timestamp:6.2f}s  {pred}  p={float(head[0, pred]):.2f}", flush=True)
+                pred_stage = pred
+            elif len(extra) == 9:  # [eval] *-stagepred: the predicted stage one-hot after the joints, printed as 0-8 on change
+                pred = int(extra.argmax())
+                pred_now, prob_now = pred, float(extra[pred])
+                if pred != pred_stage:
+                    print(f"[pred]  {timestamp:6.2f}s  {pred}", flush=True)
+                pred_stage = pred
+            elif len(extra) == 1:  # [eval] *-progpred: predicted progress 0..1 -> stage 0-8 + % through it, printed per 10%
+                if str(XLEROBOT) not in sys.path:
+                    sys.path.insert(0, str(XLEROBOT))
+                from stage_labels import PROG_SHARES, PROG_STARTS  # share of 0..1 progress per fine9 stage
+
+                p = float(extra[0])
+                k = min(max(int(np.searchsorted(PROG_STARTS, p, side="right")) - 1, 0), len(PROG_SHARES) - 1)
+                pct = min(max((p - PROG_STARTS[k]) / PROG_SHARES[k], 0.0), 1.0)
+                pred = (k, int(pct * 10))
+                pred_now, prog_now = k, p
+                if pred != pred_stage:
+                    print(f"[prog]  {timestamp:6.2f}s  {p:.2f}  stage {k} {pct:4.0%}", flush=True)
+                pred_stage = pred
 
         elif policy is None and isinstance(teleop, Teleoperator):
             act = teleop.get_action()
@@ -532,6 +566,9 @@ def record_loop(
                 dataset.features, sent_action if sent_action is not None else robot_action_to_send, prefix=ACTION
             )
             frame = {**observation_frame, **action_frame, "task": single_task}
+            if policy is not None:  # kept only if it has a stage (save_stage_log)
+                log.append([dataset.episode_buffer["size"], -1 if stage_now is None else int(stage_now.argmax()),
+                            pred_now, prob_now, prog_now])
             dataset.add_frame(frame)
 
         if display_data:
@@ -550,6 +587,7 @@ def record_loop(
 
 
 BASE_STOP = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
+XLEROBOT = Path(__file__).resolve().parents[3] / "examples/xlerobot"  # stage_labels.py
 
 
 def live_stage(policy):
@@ -557,9 +595,8 @@ def live_stage(policy):
     else None. Needs the wrist cameras 'left_wrist' / 'right_wrist' in the robot observation."""
     if policy is None or OBS_ENV_STATE not in (getattr(policy.config, "input_features", None) or {}):
         return None
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples/xlerobot"))
+    if str(XLEROBOT) not in sys.path:
+        sys.path.insert(0, str(XLEROBOT))
     from stage_labels import STAGES, LiveStage
 
     shape = policy.config.input_features[OBS_ENV_STATE].shape
@@ -776,6 +813,22 @@ def save_interventions(root: Path, episode_index: int, spans: list[tuple[int, in
         writer.writerows([episode_index, a, b] for a, b in spans)
 
 
+def save_stage_log(root: Path, episode_index: int, log: list) -> None:
+    """[eval] Append the per-frame stages of a saved episode to stages.csv (docs/workflows/dataset-viewer "阶段 / 进度"):
+    rule = the live fine9 stage fed to the model (-1: no stage input), pred = the model's own stage guess (stage head,
+    *-stagepred argmax, *-progpred progress -> stage; -1 on human frames or none), prob = its probability (stage head
+    softmax / stagepred output), progress = the *-progpred output 0..1 (empty when not given)."""
+    if not any(r[1] >= 0 or r[2] >= 0 for r in log):  # a plain model: nothing to save
+        return
+    csv_path = Path(root) / "stages.csv"
+    new_file = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(["episode", "frame", "rule", "pred", "prob", "progress"])
+        writer.writerows([episode_index, *r[:3], *("" if v != v else round(v, 4) for v in r[3:])] for r in log)
+
+
 @parser.wrap()
 def record(cfg: RecordConfig) -> LeRobotDataset:
     init_logging()
@@ -809,6 +862,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     train_cfg_path = None if cfg.policy is None else Path(cfg.policy.pretrained_path) / "train_config.json"
     if train_cfg_path is not None and train_cfg_path.is_file():
         drop_feature_names(dataset_features, json.loads(train_cfg_path.read_text())["dataset"].get("drop_names", []))
+        # Datasets already recorded without the head/base (e.g. *-stagelabel) don't list them in drop_names.
+        if len(dataset_features[ACTION]["names"]) != cfg.policy.output_features[ACTION].shape[0]:
+            drop_feature_names(dataset_features, ["head_motor_1.pos", "head_motor_2.pos", *BASE_STOP])
 
     dataset = None
     listener = None
@@ -855,7 +911,14 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 )
 
         # Load pretrained policy
-        policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta, rename_map=cfg.dataset.rename_map)  # [eval] official omits rename_map
+        # [eval] Build the net with the trained action size: *-stagepred / -progpred predict extra targets after the joints,
+        # which make_robot_action drops (it maps the first len(names) outputs to the robot's joint names).
+        policy_meta = dataset.meta
+        if cfg.policy is not None and tuple(dataset.features[ACTION]["shape"]) != tuple(cfg.policy.output_features[ACTION].shape):
+            policy_meta = copy.copy(dataset.meta)
+            act = {**dataset.meta.features[ACTION], "shape": tuple(cfg.policy.output_features[ACTION].shape)}
+            policy_meta.info = {**dataset.meta.info, "features": {**dataset.meta.features, ACTION: act}}
+        policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=policy_meta, rename_map=cfg.dataset.rename_map)  # [eval] official omits rename_map
         preprocessor = None
         postprocessor = None
         if cfg.policy is not None:
@@ -963,6 +1026,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     episode_index = dataset.num_episodes
                     save_evaluation_episode(dataset, success, cfg.policy.pretrained_path)
                     save_interventions(dataset.root, episode_index, spans)
+                    save_stage_log(dataset.root, episode_index, events.pop("stage_log", []))
                     results.append(success)
                     print(f"Success rate: {sum(results)}/{len(results)} = {sum(results) / len(results):.0%}")
                     recorded_episodes += 1

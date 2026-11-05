@@ -344,7 +344,11 @@ class DiffusionModel(nn.Module):
         assert n_obs_steps == self.config.n_obs_steps
 
         # Encode image features and concatenate them all together along with the state vector.
-        global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
+        if self.config.stage_head_weight:  # also keep the stage head's guess at the latest step, for eval logging
+            global_cond, obs_feats = self._prepare_global_conditioning(batch, obs=True)
+            self.stage_head_pred = self.stage_head(obs_feats[:, -1]).softmax(-1)  # (B, n_stage)
+        else:
+            global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
 
         # run sampling
         actions = self.conditional_sample(batch_size, global_cond=global_cond, noise=noise)

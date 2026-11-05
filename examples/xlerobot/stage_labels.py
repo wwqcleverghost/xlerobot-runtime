@@ -43,6 +43,11 @@ SIZE_VERSION = 2     # bump when tape_size changes (cached sizes are keyed by it
 GR = score.GR
 CAM = {"L": "left_wrist", "R": "right_wrist"}
 STAGES = ["A前往", "A对位", "A抓住", "A抓着", "AB对位", "B抓住", "B抓着", "B放下", "复位"]
+# Share of 0..1 progress per stage (stage_progress.py on v6-handover-curated-stagelabel, 2026-11-03, docs/workflows/stage-labels
+# "Training weights"): eval prints a *-progpred progress as stage + percent, the dataset viewer draws stage progress with it.
+# ponytail: fixed to the v6 shares; read <dataset>/sarm_progress shares if a progpred model on other data is evaluated.
+PROG_SHARES = np.array([0.154, 0.119, 0.058, 0.130, 0.126, 0.053, 0.096, 0.070, 0.194])
+PROG_STARTS = np.r_[0.0, np.cumsum(PROG_SHARES)[:-1]]
 
 
 def tape_size(rgb):
