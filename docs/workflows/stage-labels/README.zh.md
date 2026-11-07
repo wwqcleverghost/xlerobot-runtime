@@ -205,6 +205,67 @@ B抓着 0.67、B放下 0.64、复位 0.52。每条录像平均权重的中位数
 2026-11-03：由 `v6-handover-curated-stagelabel`（58 条，34209 帧，19:00 的标签，含当天的手改起点）在本地构建
 `v6-handover-curated-stagepred`、`v6-handover-curated-progpred`（未上传 HF）。
 
+## 阶段进度回喂（记忆）
+
+目标：把阶段进度当作模型的记忆，既是输入也是输出，评测时由模型自己维护。
+
+**进度数组 s**（[`examples/xlerobot/stage_progress_cum.py`](../../../examples/xlerobot/stage_progress_cum.py)）：9 个元素，
+已完成的阶段 = 1，当前阶段 = 阶段内进度，后面的 = 0（第 4 阶段走到 40% = `[1,1,1,0.4,0,0,0,0,0]`）。阶段边界是 fine9（含手改起点）。
+阶段内进度用"路程"算：12 个关节（A 臂在前、B 臂在后，按数据集标准差归一化，5 帧平滑）；把所有录像同一阶段的帧连成路网
+（每帧连最近的 10 帧，加上本录像相邻帧），进度 = 1 − 沿路网到本段末帧的最短路程 ÷ 段首的路程。段首正好 0、段末正好 1；
+停住不变，后退（重抓、重新对准）会下降。对照方法：直线距离（弯路会先降）、预计剩余时间（台阶、跳变，不用）。
+`--plot` 画曲线（2026-11-07，`outputs/stage_progress_20261107/`：ep43 A 抓了三次、ep41 B 第一次抓空，路程进度都会掉回去再上升）。
+是事后标签，只用于训练；评测时 s 来自模型自己。
+
+**数据集**：`add_stage_target.py --kind cumprog` → `<名字>-cumprog`：`observation.environment_state` = s，动作后接 s（9 维）。
+动作统计里这 9 维写成 min −1 / max 1，归一化后数值不变（s 在 0..1，变化量在 −1..1）；同时写 `sarm_progress.parquet`
+（`progress_sparse` = sum(s) / 9）供 RA-BC 用。
+
+**模型**（`--policy.progress_mode`，扩散 / flow 策略）：
+
+| 模式 | 动作后 9 维的目标 | 评测时每执行 8 步更新 s |
+|---|---|---|
+| `self` | s 本身 | s ← 第 8 步的 ŝ |
+| `delta` | 真 s − 带误差的输入 s（往正确值拉） | s ← s + 第 8 步的 Δs，截到 0..1 |
+| `deltainc` | 真 s − 真的当前 s（纯增量） | 同上 |
+
+- 训练时输入的 s 故意带误差，模拟模型自己预测时会犯的错。误差按 v = sum(s)（阶段单位）加：每个样本 N(0, 0.12)，
+  25% 的样本再加一次跳变（指数分布，均值 1 个阶段，最多 3），4 成判早、6 成判晚。这个分布来自离线近似测试：
+  最近邻只看关节、自己回喂 s 时，73% 的帧误差 < 0.3（标准差约 0.12），27% 平均差 1.2 个阶段。
+- 9 维每维的 loss 乘 1/9，合起来相当于 1 个关节。
+- **检查分支**（`--policy.progress_check_weight`）：小网络，输入最新一帧的关节 + 画面特征 + 两个猜测 s、s1，输出当前 s。
+  训练时两个猜测各自以 `progress_check_mix`（默认 35%）的概率带大误差，目标始终是真 s。`--policy.progress_check_only=true`
+  只训练这个分支（单独的估计器）。评测时用 `policy.progress_check(obs, s, s1)`。
+
+**离线近似测试**（2026-11-08，不训练，最近邻代替模型，只用关节，每次留一条录像，58 条）：
+
+| 输入 | 开头判成复位 | 阶段一致率 | A抓住 | B抓住 | 进度误差（阶段） |
+|---|---|---|---|---|---|
+| 只看关节 | 31% | 65% | 45% | 60% | 0.98 |
+| 关节 + 自己猜的 s（闭环） | 0% | 76% | 52% | 57% | 0.40 |
+| 关节 + 正确的 s | 0% | 84% | 77% | 70% | 0.18 |
+| 关节 + 正确的 s，s 权重 ×3 | 0% | 90% | 86% | 84% | 0.11 |
+| 关节 + 自己猜的 s，s 权重 ×3 | 0% | 72% | 52% | 51% | 0.57 |
+
+记忆消除了开头 / 结尾的混淆；自己回喂时错误会累积，越依赖 s 越明显，所以训练时要给 s 掺错。
+
+**RA-BC 改进**：`--rabc_lookahead_max=<帧数>` 时，进度变化 = 未来这么多帧内达到的最大进度 − 当前进度，
+先退后进（重抓、重新对准）不会被降权。
+
+**训练**（2026-11-08，git `5c82a505`，140K 步，同一 flow 配方；数据 `v6-handover-curated-cumprog`，由 server2 上的
+`v6-handover-curated-stagelabel` 构建，未上传 HF）：
+
+| 任务 | 模型 | 说明 |
+|---|---|---|
+| `flow:v6progself` | `v6-flow_h16_s8_progself` | self + 检查分支（权重 1.0，掺错 35%） |
+| `flow:v6progdelta` | `v6-flow_h16_s8_progdelta` | delta |
+| `flow:v6progdeltainc` | `v6-flow_h16_s8_progdeltainc` | deltainc |
+| `flow:v6prog<模式>rabc` | `v6-flow_h16_s8_prog<模式>_rabc` | 加 RA-BC（往前看 90 帧，κ = 0.15） |
+| `est:v6mix20/35/50` | `v6-progcheck_mix20/35/50` | 单独的估计器，40K 步，掺错 20 / 35 / 50% |
+
+**评测还没接上**：现在的评测脚本见到 `observation.environment_state` 会喂 fine9 one-hot，这些模型不能直接评测。
+要先改评测：s 从全 0 开始，按上表更新（progself 还可以用检查分支或单独估计器的 s2）。不加去抖，也不在完成后锁定。
+
 ## 评测
 
 真机评测时模型需要每一帧的阶段。`lerobot_record_eval.py` 和 `examples/xlerobot/eval_remote_trials.py` **自动**处理：

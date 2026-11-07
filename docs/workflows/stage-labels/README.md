@@ -224,6 +224,72 @@ Four v6 comparisons against the baseline `v6_flow_h16_s8` (all 140K steps, the s
 2026-11-03: built locally from `v6-handover-curated-stagelabel` (58 episodes, 34209 frames, labels of 19:00 with that day's hand-set starts):
 `v6-handover-curated-stagepred`, `v6-handover-curated-progpred` (not on HF).
 
+## Stage progress fed back (memory)
+
+Goal: the stage progress is the policy's memory, both an input and an output, kept by the policy itself at eval.
+
+**Progress array s** ([`examples/xlerobot/stage_progress_cum.py`](../../../examples/xlerobot/stage_progress_cum.py)): 9 elements,
+stages done = 1, the current stage = its within-stage progress, later ones = 0 (stage 4 at 40% = `[1,1,1,0.4,0,0,0,0,0]`). Stage
+boundaries are fine9 (hand-set starts included). Within-stage progress is a "road" distance: 12 joints (A arm first, then B, divided
+by the dataset std, 5-frame smoothed); all episodes' frames of that stage form a road network (each frame linked to its 10 nearest
+frames plus its own neighbouring frames); progress = 1 − shortest road distance to the run's last frame ÷ that distance at the run's
+first frame. Exactly 0 at the start, 1 at the end; flat while still, down when stepping back (re-grasp, re-align). Compared with:
+straight-line distance (dips on curved paths) and expected time left (steps and jumps, not used). `--plot` draws curves
+(2026-11-07, `outputs/stage_progress_20261107/`: ep43 A grasps three times, ep41 B misses once; road progress drops and rises again).
+A post-hoc label, for training only; at eval s comes from the policy itself.
+
+**Dataset**: `add_stage_target.py --kind cumprog` → `<name>-cumprog`: `observation.environment_state` = s and s (9 dims) appended to
+the action. The action stats of those 9 dims are min −1 / max 1, so normalization leaves them as they are (s in 0..1, changes in
+−1..1); also writes `sarm_progress.parquet` (`progress_sparse` = sum(s) / 9) for RA-BC.
+
+**Policy** (`--policy.progress_mode`, diffusion / flow policy):
+
+| mode | target of the last 9 action dims | eval: s update every 8 executed steps |
+|---|---|---|
+| `self` | s itself | s ← ŝ of step 8 |
+| `delta` | true s − the noisy input s (pull back to the truth) | s ← s + Δs of step 8, clipped to 0..1 |
+| `deltainc` | true s − true current s (pure increments) | same |
+
+- Training gives the policy a deliberately wrong s, like the errors it makes when s is its own. The error is added to v = sum(s)
+  (stage units): N(0, 0.12) on every sample, plus on 25% of samples a jump (exponential, mean 1 stage, capped at 3), early 40% /
+  late 60%. From the offline proxy below: with nearest neighbours on joints feeding back their own s, 73% of frames are off by < 0.3
+  (std ~0.12) and 27% by 1.2 stages on average.
+- Each of the 9 dims weighs 1/9 in the loss: together one joint.
+- **Check head** (`--policy.progress_check_weight`): a small network from the latest joints + image features and two guesses s and
+  s1 to the current s. In training each guess is badly wrong with probability `progress_check_mix` (default 35%); the target is
+  always the true s. `--policy.progress_check_only=true` trains the head alone (a separate estimator). Eval: `policy.progress_check(obs, s, s1)`.
+
+**Offline proxy** (2026-11-08, no training: nearest neighbours instead of a model, joints only, leave one episode out, 58 episodes):
+
+| input | start judged reset | stage agreement | A grasp | B grasp | progress error (stages) |
+|---|---|---|---|---|---|
+| joints only | 31% | 65% | 45% | 60% | 0.98 |
+| joints + own s (closed loop) | 0% | 76% | 52% | 57% | 0.40 |
+| joints + true s | 0% | 84% | 77% | 70% | 0.18 |
+| joints + true s, s weighted ×3 | 0% | 90% | 86% | 84% | 0.11 |
+| joints + own s, s weighted ×3 | 0% | 72% | 52% | 51% | 0.57 |
+
+Memory removes the
+start / end confusion; feeding back its own s accumulates errors, the more so the more it relies on s, hence the noisy s in training.
+
+**RA-BC change**: with `--rabc_lookahead_max=<frames>` the progress delta = the best progress reached within that many frames −
+the current one, so stepping back to do better (re-grasp, re-align) is not down-weighted.
+
+**Training** (2026-11-08, git `5c82a505`, 140K steps, the same flow recipe; data `v6-handover-curated-cumprog`, built from
+`v6-handover-curated-stagelabel` on server2, not on HF):
+
+| job | model | notes |
+|---|---|---|
+| `flow:v6progself` | `v6-flow_h16_s8_progself` | self + check head (weight 1.0, 35% wrong guesses) |
+| `flow:v6progdelta` | `v6-flow_h16_s8_progdelta` | delta |
+| `flow:v6progdeltainc` | `v6-flow_h16_s8_progdeltainc` | deltainc |
+| `flow:v6prog<mode>rabc` | `v6-flow_h16_s8_prog<mode>_rabc` | plus RA-BC (90-frame look-ahead, κ = 0.15) |
+| `est:v6mix20/35/50` | `v6-progcheck_mix20/35/50` | separate estimator, 40K steps, 20 / 35 / 50% wrong guesses |
+
+**Eval is not wired yet**: the eval scripts feed the fine9 one-hot to any model with `observation.environment_state`, so these
+models cannot be evaluated as is. Eval first needs: s starts at all zeros and is updated as in the table above (progself can also
+use the s2 of its check head or of the separate estimator). No debounce and no lock after completion.
+
 ## Eval
 
 In real-robot eval the model needs the stage of every frame. `lerobot_record_eval.py` and `examples/xlerobot/eval_remote_trials.py` handle it

@@ -41,7 +41,7 @@
 #   flow:v6prog<mode>    v6-flow_h16_s8_prog<mode>, mode delta / deltainc / self: the cumulative stage progress s fed back
 #                        as input and predicted after the actions (v6-handover-curated-cumprog, --policy.progress_mode);
 #                        self also trains the progress check head (--policy.progress_check_weight)
-#   flow:v6progselfrabc  v6-flow_h16_s8_progself_rabc: progself with RA-BC, the progress delta = best progress within 3 s
+#   flow:v6prog<mode>rabc  v6-flow_h16_s8_prog<mode>_rabc: the same with RA-BC, progress delta = best progress within 3 s
 #   est:v6mix<NN>        v6-progcheck_mix<NN>: the progress check alone (separate estimator), guesses wrong NN% of the time
 # Run detached (no tmux on the lab computer):
 #   setsid nohup bash ~/wwq/queue_v3.sh flow flow:sepenc >> ~/wwq/logs/queue_v3.log 2>&1 < /dev/null &
@@ -86,7 +86,7 @@ for job in "$@"; do
       "--dataset.drop_names=[observation.environment_state]") ;;
     flow:v6progpred) name=v6-flow_h16_s8_progpred data=v6-handover-curated-progpred steps=140000 keep=3 policy=("${FLOW[@]}"
       "--dataset.drop_names=[observation.environment_state]") ;;
-    flow:v6progdelta|flow:v6progdeltainc|flow:v6progself|flow:v6progselfrabc)
+    flow:v6progdelta|flow:v6progdeltainc|flow:v6progself|flow:v6progdeltarabc|flow:v6progdeltaincrabc|flow:v6progselfrabc)
       m=${job#flow:v6prog} name=v6-flow_h16_s8_prog${m/rabc/_rabc} data=v6-handover-curated-cumprog steps=140000 keep=3
       policy=("${FLOW[@]}" --policy.progress_mode=${m%rabc})
       [[ $m == self* ]] && policy+=(--policy.progress_check_weight=1.0)

@@ -30,6 +30,10 @@ Scripts in this directory (copy to the machine with rsync, never scp over a runn
   see `../stage-labels/` "Training weights"). `flow:v6stagepred` / `flow:v6progpred` = the v6 baseline that also predicts the stage
   one-hot / the stage progress as extra action dims, no stage input (`v6-flow_h16_s8_stagepred` / `_progpred` on
   `v6-handover-curated-stagepred` / `-progpred`, see `../stage-labels/` "Stage as a prediction target").
+  `flow:v6prog<mode>` (delta / deltainc / self) = stage progress fed back: the progress array s is an input and is also
+  predicted after the actions (`v6-flow_h16_s8_prog<mode>`, data `v6-handover-curated-cumprog`); self also trains the check head;
+  `flow:v6prog<mode>rabc` adds RA-BC on the best progress within 3 s; `est:v6mix<NN>` = the separate progress estimator
+  `v6-progcheck_mix<NN>` (40K steps). See `../stage-labels/` "Stage progress fed back".
 - `finish_v2.sh` — finishes `d2t_*_v2` REACT runs on `data/handover2-trimmed-v2` (V4, 50 episodes): resume
   with the canonical dataset ID and root, or restart from scratch.
 - `prune_checkpoints.py <run-output-dir>` — keeps the last three model snapshots and only the latest full

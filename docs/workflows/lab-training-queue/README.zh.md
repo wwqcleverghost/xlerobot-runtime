@@ -27,6 +27,9 @@ English: [README.md](README.md)
   训练前先把 `sarm_progress.parquet` 写进数据集，见 `../stage-labels/`"训练加权"）。`flow:v6stagepred` / `flow:v6progpred` = v6 基线，
   额外把阶段 one-hot / 阶段进度当作动作的附加维度来预测，没有阶段输入（`v6-flow_h16_s8_stagepred` / `_progpred`，数据
   `v6-handover-curated-stagepred` / `-progpred`，见 `../stage-labels/`"阶段作为预测目标"）。
+  `flow:v6prog<模式>`（delta / deltainc / self）= 阶段进度回喂：进度数组 s 既是输入也接在动作后面预测（`v6-flow_h16_s8_prog<模式>`，数据
+  `v6-handover-curated-cumprog`），self 另带检查分支；`flow:v6prog<模式>rabc` 再加"往前看 3 秒最大进度"的 RA-BC；`est:v6mix<NN>` = 单独的进度估计器
+  `v6-progcheck_mix<NN>`（40K 步）。见 `../stage-labels/`"阶段进度回喂"。
 - `finish_v2.sh` — 在 `data/handover2-trimmed-v2`（V4，50 个 episode）上完成 `d2t_*_v2` REACT run：用规范的数据集 ID 和 root 续训，
   或从头重训。
 - `prune_checkpoints.py <run-output-dir>` — 保留最后三个模型快照，只保留最新的完整训练状态。删除前先验证发布出去的
