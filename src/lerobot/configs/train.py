@@ -74,6 +74,7 @@ class TrainPipelineConfig(HubMixin):
     rabc_progress_path: str | None = None  # Path to precomputed SARM progress parquet file
     rabc_kappa: float = 0.01  # Hard threshold for high-quality samples
     rabc_epsilon: float = 1e-6  # Small constant for numerical stability
+    rabc_lookahead_max: int = 0  # > 0: progress delta = best progress within this many frames - current
     rabc_head_mode: str | None = "sparse"  # For dual-head models: "sparse" or "dense"
 
     # Rename map for the observation to override the image and state keys

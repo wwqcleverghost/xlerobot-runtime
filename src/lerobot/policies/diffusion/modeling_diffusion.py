@@ -172,8 +172,19 @@ class DiffusionPolicy(PreTrainedPolicy):
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
             batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
         loss = self.diffusion.compute_loss(batch, reduction)
-        # the stage head's cross-entropy and accuracy go to the training log; otherwise no output_dict
-        return loss, (self.diffusion.stage_metrics if self.config.stage_head_weight else None)
+        # stage head / progress check metrics go to the training log; otherwise no output_dict
+        return loss, (self.diffusion.stage_metrics or None)
+
+    @torch.no_grad()
+    def progress_check(self, batch: dict[str, Tensor], s: Tensor, s1: Tensor) -> Tensor:
+        """Current stage progress (B, n) from the check head (config.progress_check_weight): the latest observation
+        (preprocessed, no time dim: state and camera images) and two guesses, the progress input s and the
+        policy's own prediction s1 (B, n)."""
+        obs = {OBS_STATE: batch[OBS_STATE][:, None], OBS_ENV_STATE: s[:, None]}
+        if self.config.image_features:
+            obs[OBS_IMAGES] = torch.stack([batch[k] for k in self.config.image_features], dim=-4)[:, None]
+        _, obs_feats = self.diffusion._prepare_global_conditioning(obs, obs=True)
+        return self.diffusion.progress_check(torch.cat([obs_feats[:, -1], s, s1], -1))
 
 
 def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMScheduler:
@@ -193,6 +204,7 @@ class DiffusionModel(nn.Module):
     def __init__(self, config: DiffusionConfig):
         super().__init__()
         self.config = config
+        self.stage_metrics = {}  # training-log metrics of the stage head / progress check
 
         # Build observation encoders (depending on which observations are provided).
         global_cond_dim = self.config.robot_state_feature.shape[0]
@@ -214,6 +226,13 @@ class DiffusionModel(nn.Module):
             n_stage = config.env_state_feature.shape[0]
             self.stage_head = nn.Sequential(
                 nn.Linear(global_cond_dim - n_stage, 256), nn.Mish(), nn.Linear(256, n_stage)
+            )
+
+        if config.progress_check_weight:  # latest state + image features, guesses s and s1 -> current s
+            n_stage = config.env_state_feature.shape[0]
+            self.progress_check = nn.Sequential(
+                nn.Linear(global_cond_dim + n_stage, 256), nn.Mish(), nn.Linear(256, 256), nn.Mish(),
+                nn.Linear(256, n_stage), nn.Sigmoid()
             )
 
         if config.feedback:
@@ -497,11 +516,17 @@ class DiffusionModel(nn.Module):
         assert horizon == self.config.horizon
         assert n_obs_steps == self.config.n_obs_steps
 
+        self.stage_metrics = {}
+        if self.config.progress_mode or self.config.progress_check_weight:
+            batch, true_s = self._progress_batch(batch)
+
         # Encode image features and concatenate them all together along with the state vector.
-        if self.config.stage_head_weight:
+        if self.config.stage_head_weight or self.config.progress_check_weight:
             global_cond, obs_feats = self._prepare_global_conditioning(batch, obs=True)  # (B, global_cond_dim)
         else:
             global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
+        if self.config.progress_check_only:  # separate estimator: the check head alone
+            return self._progress_check_loss(obs_feats, true_s)
 
         # Forward diffusion.
         trajectory = batch[ACTION]
@@ -554,13 +579,58 @@ class DiffusionModel(nn.Module):
             in_episode_bound = ~batch["action_is_pad"]
             loss = loss * in_episode_bound.unsqueeze(-1)
 
+        if self.config.progress_mode:  # the 9 progress dims weigh as much as one joint together
+            n = true_s.shape[-1]
+            loss = loss * torch.cat([loss.new_ones(loss.shape[-1] - n), loss.new_full((n,), 1 / n)])
         loss = loss.mean() if reduction == "mean" else loss.flatten(1).mean(1)
+        if self.config.progress_check_weight:
+            loss = loss + self.config.progress_check_weight * self._progress_check_loss(obs_feats, true_s)
         if not self.config.stage_head_weight:
             return loss
         logits, stage = self.stage_head(obs_feats).flatten(0, 1), batch[OBS_ENV_STATE].argmax(-1).flatten()
         stage_ce = F.cross_entropy(logits, stage)
-        self.stage_metrics = {"stage_ce": stage_ce.item(), "stage_acc": (logits.argmax(-1) == stage).float().mean().item()}
+        self.stage_metrics.update(stage_ce=stage_ce.item(), stage_acc=(logits.argmax(-1) == stage).float().mean().item())
         return loss + self.config.stage_head_weight * stage_ce
+
+    def _progress_error(self, v: Tensor, big: float) -> Tensor:
+        """Random error (stage units) for true progress v (B,): N(0, small) plus, with probability `big`, an early
+        (+) or late (-) jump of exponential size capped at 3 (config.progress_noise_*)."""
+        c = self.config
+        jump = torch.empty_like(v).exponential_(1 / c.progress_noise_big_scale).clamp(max=3)
+        sign = torch.where(torch.rand_like(v) < c.progress_noise_early, 1.0, -1.0)
+        return torch.randn_like(v) * c.progress_noise_small + (torch.rand_like(v) < big) * sign * jump
+
+    @staticmethod
+    def cumulative(v: Tensor, n: int) -> Tensor:
+        """Cumulative progress array (..., n) from v = stage index + within-stage progress (...)."""
+        return (v.clamp(0, n)[..., None] - torch.arange(n, device=v.device)).clamp(0, 1)
+
+    def _progress_batch(self, batch: dict[str, Tensor]) -> tuple[dict[str, Tensor], Tensor]:
+        """Training batch with a noisy progress input and the action target of config.progress_mode; also the
+        true progress (B, n_obs_steps, n). The action's last n dims hold the true s at each chunk step."""
+        true_s = batch[OBS_ENV_STATE]
+        if not self.config.progress_mode:
+            return batch, true_s
+        n, v = true_s.shape[-1], true_s.sum(-1)
+        s_in = self.cumulative(v + self._progress_error(v[:, -1], self.config.progress_noise_big)[:, None], n)
+        batch = dict(batch)
+        batch[OBS_ENV_STATE] = s_in
+        if self.config.progress_mode != "self":
+            ref = s_in if self.config.progress_mode == "delta" else true_s
+            action = batch[ACTION].clone()
+            action[..., -n:] -= ref[:, -1:]
+            batch[ACTION] = action
+        return batch, true_s
+
+    def _progress_check_loss(self, obs_feats: Tensor, true_s: Tensor) -> Tensor:
+        """MSE of the check head on the latest step, from two guesses each wrong with probability progress_check_mix."""
+        n, v = true_s.shape[-1], true_s[:, -1].sum(-1)
+        guess = [self.cumulative(v + self._progress_error(v, self.config.progress_check_mix), n) for _ in range(2)]
+        est = self.progress_check(torch.cat([obs_feats[:, -1], *guess], -1))
+        mse = F.mse_loss(est, true_s[:, -1])
+        self.stage_metrics["progress_check_mse"] = mse.item()
+        self.stage_metrics["progress_check_mae_stages"] = (est.sum(-1) - v).abs().mean().item()
+        return mse
 
 
 class SpatialSoftmax(nn.Module):

@@ -303,6 +303,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             kappa=getattr(cfg, "rabc_kappa", 0.01),
             epsilon=getattr(cfg, "rabc_epsilon", 1e-6),
             device=device,
+            lookahead_max=getattr(cfg, "rabc_lookahead_max", 0),
         )
 
     step = 0  # number of policy updates (forward + backward + optim)

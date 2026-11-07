@@ -182,6 +182,26 @@ class DiffusionConfig(PreTrainedConfig):
     # 0 = off.
     stage_head_weight: float = 0.0
 
+    # Stage progress fed back as memory (docs/workflows/stage-labels): observation.environment_state is the cumulative
+    # 9-element progress s (examples/xlerobot/stage_progress_cum.py) and the last 9 action dims are s at each chunk
+    # step. Training gives the policy a noisy s (the errors it will meet when s comes from itself) and the action
+    # target is, per mode: "self" s itself; "delta" s minus the noisy input (pull back to the truth); "deltainc"
+    # s minus the true current s (pure increments). The 9 dims weigh 1/9 each in the loss. None = off.
+    progress_mode: str | None = None
+    # Input noise in stage units, on v = sum(s): N(0, small) on every sample, plus with probability `big` a jump of
+    # exponential size (mean `big_scale`, capped at 3), early (+) with probability `early`, otherwise late (-).
+    progress_noise_small: float = 0.12
+    progress_noise_big: float = 0.25
+    progress_noise_big_scale: float = 1.0
+    progress_noise_early: float = 0.4
+    # Progress check: a head that estimates the current s from the latest joint state + image features and two
+    # noisy guesses s and s1 (each wrong with probability `progress_check_mix`, as above with big = 1); the target
+    # is the true s. Its MSE times the weight is added to the loss. progress_check_only trains the head alone (a
+    # separate estimator: no action loss).
+    progress_check_weight: float = 0.0
+    progress_check_mix: float = 0.35
+    progress_check_only: bool = False
+
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
@@ -253,6 +273,10 @@ class DiffusionConfig(PreTrainedConfig):
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
         if self.stage_head_weight and self.env_state_feature is None:
             raise ValueError("The stage head predicts observation.environment_state: the dataset needs that feature.")
+        if (self.progress_mode or self.progress_check_weight) and self.env_state_feature is None:
+            raise ValueError("Stage progress needs observation.environment_state (the progress s) in the dataset.")
+        if self.progress_mode not in (None, "self", "delta", "deltainc"):
+            raise ValueError(f"progress_mode must be self, delta or deltainc, got {self.progress_mode}")
         if self.feedback and len(self.image_features) == 0:
             raise ValueError("Feedback denoising looks at camera frames: the policy needs image inputs.")
 

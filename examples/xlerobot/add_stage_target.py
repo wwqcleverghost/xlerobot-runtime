@@ -2,6 +2,11 @@
 
 --kind stage:    action += fine9 stage one-hot (9 dims)          -> <name>-stagepred
 --kind progress: action += stage progress 0..1 (1 dim, the RA-BC progress of stage_progress.py) -> <name>-progpred
+--kind cumprog:  observation.environment_state = the cumulative within-stage progress s (9 dims, road measure of
+                 stage_progress_cum.py) and action += s (9 dims)                    -> <name>-cumprog
+                 For the progress feedback policies (--policy.progress_mode): their action stats for these dims are
+                 min -1 / max 1, so normalization leaves s and the progress changes (-1..1) as they are; also writes
+                 sarm_progress.parquet (progress_sparse = sum(s) / 9) for RA-BC.
 The extra dims come last, so live eval still sends only the robot's joints (make_robot_action maps by the robot's names) and
 the model needs no change; train with --dataset.drop_names=[observation.environment_state] so the stage is a target, not an input.
 data/ and meta/ are rewritten copies, videos/ are hard links.
@@ -22,6 +27,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 from stage_labels import STAGES  # noqa: E402
 from stage_progress import progress  # noqa: E402
+import stage_progress_cum  # noqa: E402
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset  # noqa: E402
 from lerobot.utils.constants import HF_LEROBOT_HOME  # noqa: E402
@@ -32,7 +38,7 @@ OWNER = "wwqcleverghost"
 
 def main(src, kind):
     root = HF_LEROBOT_HOME / OWNER / src
-    dst = src.removesuffix("-stagelabel") + {"stage": "-stagepred", "progress": "-progpred"}[kind]
+    dst = src.removesuffix("-stagelabel") + {"stage": "-stagepred", "progress": "-progpred", "cumprog": "-cumprog"}[kind]
     new_root = root.parent / dst
     assert not new_root.exists(), f"{dst} already exists"
     files = sorted(glob.glob(str(root / "data/*/*.parquet")))
@@ -41,12 +47,20 @@ def main(src, kind):
     labs = {ep: np.stack(g.sort_values("frame_index")[KEY].to_numpy()).argmax(1) for ep, g in allf.groupby("episode_index")}
     if kind == "stage":
         extra, names = {ep: np.eye(len(STAGES), dtype=np.float32)[lab] for ep, lab in labs.items()}, [f"stage.{s}" for s in STAGES]
-    else:
+    elif kind == "progress":
         extra, names = {ep: p[:, None].astype(np.float32) for ep, p in progress(labs)[0].items()}, ["stage.progress"]
+    else:
+        eps = stage_progress_cum.load(root)
+        assert all(np.array_equal(eps[ep][1], labs[ep]) for ep in labs)
+        road = stage_progress_cum.progress(eps)["road"]
+        extra = {ep: stage_progress_cum.cumulative(labs[ep], road[ep]) for ep in labs}
+        names = [f"progress.{s}" for s in STAGES]
     shutil.copytree(root / "videos", new_root / "videos", copy_function=os.link)
     shutil.copytree(root / "meta", new_root / "meta")
     for f, df in zip(files, dfs):
         df["action"] = [np.r_[a, extra[int(e)][int(i)]].astype(np.float32) for a, e, i in zip(df["action"], df["episode_index"], df["frame_index"])]
+        if kind == "cumprog":
+            df[KEY] = [extra[int(e)][int(i)] for e, i in zip(df["episode_index"], df["frame_index"])]
         out = new_root / Path(f).relative_to(root)
         out.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(out, index=False)
@@ -63,8 +77,17 @@ def main(src, kind):
         q = {"min": allv.min(0), "max": allv.max(0), "mean": allv.mean(0), "std": allv.std(0)}.get(stat)
         if q is None:  # q01 .. q99
             q = np.quantile(allv, int(stat[1:]) / 100, axis=0)
+        if kind == "cumprog":   # identity normalization for s and its changes (MIN_MAX on -1..1)
+            q = {"min": -np.ones(len(names)), "max": np.ones(len(names)), "mean": np.zeros(len(names)),
+                 "std": np.ones(len(names))}.get(stat, q)
         stats["action"][stat] = list(value) + q.tolist()
+        if kind == "cumprog":
+            e = {"min": allv.min(0), "max": allv.max(0), "mean": allv.mean(0), "std": allv.std(0)}.get(stat)
+            stats[KEY][stat] = (np.quantile(allv, int(stat[1:]) / 100, axis=0) if e is None else e).tolist()
     (new_root / "meta/stats.json").write_text(json.dumps(stats, indent=4))
+    if kind == "cumprog":
+        allf["progress_sparse"] = [extra[int(e)][int(i)].sum() / len(STAGES) for e, i in zip(allf["episode_index"], allf["frame_index"])]
+        allf[["index", "episode_index", "progress_sparse"]].to_parquet(new_root / "sarm_progress.parquet", index=False)
     # check: the action keeps its joints and carries the extra dims, a frame (with video) still loads
     new = LeRobotDataset(f"{OWNER}/{dst}", root=new_root)
     act = np.stack(new.hf_dataset["action"])
@@ -78,6 +101,6 @@ def main(src, kind):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", required=True)
-    ap.add_argument("--kind", choices=["stage", "progress"], required=True)
+    ap.add_argument("--kind", choices=["stage", "progress", "cumprog"], required=True)
     x = ap.parse_args()
     main(x.dataset, x.kind)

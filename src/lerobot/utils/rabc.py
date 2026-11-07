@@ -62,6 +62,7 @@ class RABCWeights:
         epsilon: float = 1e-6,
         fallback_weight: float = 1.0,
         device: torch.device = None,
+        lookahead_max: int = 0,
     ):
         self.progress_path = resolve_hf_path(progress_path)
         self.chunk_size = chunk_size
@@ -69,6 +70,9 @@ class RABCWeights:
         self.kappa = kappa
         self.epsilon = epsilon
         self.fallback_weight = fallback_weight
+        # > 0: the future progress is the best one reached within this many frames (not the one exactly chunk_size
+        # ahead), so a step back that is made up for soon (a re-grasp, a re-alignment) is not down-weighted.
+        self.lookahead_max = lookahead_max
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Determine progress column name
@@ -118,23 +122,9 @@ class RABCWeights:
         """Compute global mean and std of progress deltas for weight calculation."""
         all_deltas = []
 
-        for global_idx, progress in self.progress_lookup.items():
-            episode_idx = self.episode_lookup.get(global_idx)
-            if episode_idx is None:
-                continue
-
-            bounds = self.episode_boundaries.get(episode_idx)
-            if bounds is None:
-                continue
-
-            future_idx = global_idx + self.chunk_size
-            if future_idx >= bounds["end"]:
-                # Near end of episode: use last frame's progress
-                future_idx = bounds["end"] - 1
-
-            future_progress = self.progress_lookup.get(future_idx)
-            if future_progress is not None:
-                delta = future_progress - progress
+        for global_idx in self.progress_lookup:
+            delta = self._compute_delta(global_idx)
+            if not np.isnan(delta):
                 all_deltas.append(delta)
 
         if all_deltas:
@@ -220,6 +210,11 @@ class RABCWeights:
         bounds = self.episode_boundaries.get(episode_idx)
         if bounds is None:
             return np.nan
+
+        if self.lookahead_max:
+            ahead = [self.progress_lookup.get(i) for i in range(global_idx, min(global_idx + self.lookahead_max, bounds["end"]))]
+            ahead = [p for p in ahead if p is not None]
+            return max(ahead) - current_progress if ahead else np.nan
 
         future_idx = global_idx + self.chunk_size  # Δ = chunk_size
         if future_idx >= bounds["end"]:

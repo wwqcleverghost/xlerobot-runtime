@@ -38,6 +38,11 @@
 #   flow:v6stagepred     v6-flow_h16_s8_stagepred: the v6 baseline that also predicts the fine9 stage one-hot (9 extra action
 #                        dims of v6-handover-curated-stagepred, examples/xlerobot/add_stage_target.py); no stage input
 #   flow:v6progpred      v6-flow_h16_s8_progpred: the same with the stage progress 0..1 (1 extra action dim, v6-handover-curated-progpred)
+#   flow:v6prog<mode>    v6-flow_h16_s8_prog<mode>, mode delta / deltainc / self: the cumulative stage progress s fed back
+#                        as input and predicted after the actions (v6-handover-curated-cumprog, --policy.progress_mode);
+#                        self also trains the progress check head (--policy.progress_check_weight)
+#   flow:v6progselfrabc  v6-flow_h16_s8_progself_rabc: progself with RA-BC, the progress delta = best progress within 3 s
+#   est:v6mix<NN>        v6-progcheck_mix<NN>: the progress check alone (separate estimator), guesses wrong NN% of the time
 # Run detached (no tmux on the lab computer):
 #   setsid nohup bash ~/wwq/queue_v3.sh flow flow:sepenc >> ~/wwq/logs/queue_v3.log 2>&1 < /dev/null &
 W=${WQ:-$HOME/wwq}  # server1/server2 keep everything on /media/data/wwq: WQ=/media/data/wwq
@@ -81,6 +86,15 @@ for job in "$@"; do
       "--dataset.drop_names=[observation.environment_state]") ;;
     flow:v6progpred) name=v6-flow_h16_s8_progpred data=v6-handover-curated-progpred steps=140000 keep=3 policy=("${FLOW[@]}"
       "--dataset.drop_names=[observation.environment_state]") ;;
+    flow:v6progdelta|flow:v6progdeltainc|flow:v6progself|flow:v6progselfrabc)
+      m=${job#flow:v6prog} name=v6-flow_h16_s8_prog${m/rabc/_rabc} data=v6-handover-curated-cumprog steps=140000 keep=3
+      policy=("${FLOW[@]}" --policy.progress_mode=${m%rabc})
+      [[ $m == self* ]] && policy+=(--policy.progress_check_weight=1.0)
+      # 90 frames = 3 s look-ahead; kappa = average-pace progress over 90 frames (90 / 590 mean episode frames)
+      [[ $m == *rabc ]] && policy+=(--use_rabc=true --rabc_lookahead_max=90 --rabc_kappa=0.15) ;;
+    est:v6mix*) mix=${job#est:v6mix} name=v6-progcheck_mix$mix data=v6-handover-curated-cumprog steps=40000 keep=1
+      policy=("${FLOW[@]}" --policy.progress_check_weight=1.0 --policy.progress_check_only=true
+        --policy.progress_check_mix=0.$mix) ;;
     flow:v8stage) name=v8-flow_h16_s8_stagelabel data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
     flow:v6ft) name=v6ft_corrections_flow_h16_s8 data=v6-corrections root=$W/data/v6-corrections-v6stats steps=8000 save=2000
       base=v6_flow_h16_s8 policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model
