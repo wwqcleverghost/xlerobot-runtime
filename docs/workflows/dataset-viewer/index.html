@@ -22,7 +22,7 @@ a{color:var(--h)} .mute{color:var(--mute)} .err{color:var(--bad)}
 .legend span{display:inline-flex;align-items:center;gap:4px;margin-right:8px;color:var(--mute)} .legend i{display:inline-block;width:14px;height:8px;border-radius:2px}
 main{padding:12px 16px}
 /* dataset picker */
-.picker{position:relative} .picker>button{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.picker{position:relative;max-width:100%} .picker>button{max-width:min(520px,100%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pop{position:absolute;top:30px;left:0;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #0003;
   width:520px;max-width:92vw;max-height:70vh;overflow:auto;padding:8px}
 .pop>input{width:100%;margin-bottom:6px} .pop .row{display:flex;gap:8px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer}

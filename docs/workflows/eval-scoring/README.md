@@ -93,10 +93,15 @@ The operator ends a trial by hand, a few seconds early or late. `mark_end.py` wr
 still = the frame from which every arm joint (command and follower) stays within 3 units of its last pose: the robot has stopped
 and the rest is waiting.
 
-- `reset`: the trial reached 复位 (fine9 stage 8: the live stage from the eval's `stages.csv`, else recomputed offline from the
-  wrist videos): end = the later of still and the first 复位 frame + 1, so the end is always inside 复位 (user, 2026-11-05).
-- `still`: never reached 复位: end = still.
-- `human`: the robot moved until the last 0.5 s; end = the recorded length.
+Trials that reached 复位 (fine9 stage 8: the live stage from the eval's `stages.csv`, else recomputed offline from the wrist
+videos) end where 复位 starts (user, 2026-11-06): many were stopped mid-reset, so time up to the reset is what all of them share.
+
+- `reset`: end = the first 复位 frame.
+
+Other trials:
+
+- `still`: end = still.
+- `human`: moved until the last 0.5 s; end = the recorded length.
 
 The dataset viewer's "阶段 / 进度" page draws it and greys the rest. Scores do not use it: it is for viewing only (user, 2026-11-05).
 
@@ -104,9 +109,9 @@ The dataset viewer's "阶段 / 进度" page draws it and greys the rest. Scores 
 PYTHONPATH=src python docs/workflows/eval-scoring/mark_end.py ~/.cache/huggingface/lerobot/wwqcleverghost/eval-v8-flow_h16_s8
 ```
 
-2026-11-05 (git 79bf9dd6 + uncommitted changes): `eval-v8-flow_h16_s8` 4 placed / 5 still / 1 human; `eval-v6-flow_h16_s8`
-31 placed / 16 still / 3 human. Successful trials were recorded 1.2–10.1 s past the release; three v6 failures stopped at 0.6 s
-(never left the start) but were recorded for 13.9–44.5 s.
+2026-11-06 (git 6e1599b9 + uncommitted changes), successful trials: `eval-v6-flow_h16_s8` 28 reset / 3 human, `eval-v8-flow_h16_s8`
+4 reset, the other eval sets all reset except one human in `eval-v6-flow_h16_s8_stagepred`. The human successes are labelled success but fine9
+finds no 复位 in them, so they keep the recorded length (v6 ep26, 32, 38).
 
 ## Optional: per-frame stage labels
 

@@ -1,4 +1,36 @@
 {
+ "eval-v6-flow_h16_s8_progdelta": {
+  "29": {
+   "note": "AB对位失败"
+  }
+ },
+ "eval-v6-flow_h16_s8_progdelta_rabc": {
+  "0": {
+   "note": "AB对位失败，失败时间不对"
+  },
+  "24": {
+   "note": "AB对位失败"
+  },
+  "27": {
+   "note": "AB对位失败"
+  },
+  "28": {
+   "note": "B抓住失败"
+  }
+ },
+ "eval-v6-flow_h16_s8_progpred": {
+  "1": {
+   "note": "B抓住失败  "
+  }
+ },
+ "eval-v6-flow_h16_s8_progself": {
+  "15": {
+   "note": "AB对位失败"
+  },
+  "5": {
+   "note": "A对位失败"
+  }
+ },
  "v2-handover2": {
   "1": {
    "tags": [

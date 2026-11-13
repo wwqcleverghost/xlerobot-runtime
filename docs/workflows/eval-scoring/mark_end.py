@@ -3,10 +3,12 @@
 The operator stops a trial by hand, a few seconds early or late, so the recorded length is not the task's length.
 still = the frame from which every arm joint (command and follower) stays within RESET_TOL of its last pose (the tail rule
 of trim_stagnant_frames.keep_range): the robot has stopped and the rest is waiting for the operator.
-- how=reset: the trial reached 复位 (fine9 stage 8: the live stage from stages.csv when the eval wrote it, else recomputed
-  offline): end = the later of still and the first 复位 frame + 1, so the end is always inside 复位 (user, 2026-11-05).
-- how=still: never reached 复位: end = still.
-- how=human: the robot moved until the last 0.5 s; end = the recorded length.
+Trials that reached 复位 (fine9 stage 8: the live stage from stages.csv when the eval wrote it, else recomputed offline)
+end where it starts (user, 2026-11-06): many were stopped mid-reset, so time up to the reset is the one all of them share.
+- how=reset: end = the first 复位 frame.
+Other trials:
+- how=still: end = still.
+- how=human: never reached 复位 and moved until the last 0.5 s; end = the recorded length.
 The dataset viewer draws this end on the "阶段 / 进度" page and greys the rest; the video and data stay whole.
 
 usage: PYTHONPATH=src python docs/workflows/eval-scoring/mark_end.py <eval dir> ...
@@ -33,11 +35,12 @@ RESET = 8  # stage_labels.STAGES.index("复位")
 
 def task_end(st, ac, reset_start):
     """(end frame, how) of one trial; st / ac: (T, 12) follower state / command; reset_start = first 复位 frame or None."""
-    end = keep_range(ac, st, list(range(12)), 0.2, 2.0, RESET_TOL)[1]
-    how = "still"
     if reset_start is not None:
-        end, how = max(end, reset_start + 1), "reset"
-    return (end, how) if end < len(st) - FPS // 2 else (len(st), "human")  # still < 0.5 s: stopped while moving
+        return reset_start, "reset"
+    end = keep_range(ac, st, list(range(12)), 0.2, 2.0, RESET_TOL)[1]
+    if end >= len(st) - FPS // 2:  # still only in the last 0.5 s: the operator stopped it while it moved
+        return len(st), "human"
+    return end, "still"
 
 
 def reset_start(lab):
@@ -79,7 +82,7 @@ def selfcheck():
     st[:40, 0] = np.linspace(0, 50, 40)
     st[40:, 0] = 50  # stops at frame 40, waits 2 s
     assert task_end(st, st, None) == (38, "still"), task_end(st, st, None)  # within 3 of 50 from frame 37 on
-    assert task_end(st, st, 30) == (38, "reset") and task_end(st, st, 50) == (51, "reset")  # never before 复位 starts
+    assert task_end(st, st, 30) == (30, "reset")
     assert reset_start([0, 7, 8, 8, 0, 8]) == 2 and reset_start([0, 1]) is None
     st[:, 0] = np.linspace(0, 50, 100)  # moves to the end
     assert task_end(st, st, None) == (100, "human")

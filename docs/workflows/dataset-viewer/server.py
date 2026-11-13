@@ -46,7 +46,6 @@ import curate  # noqa: E402
 
 HOME = Path(os.path.expanduser("~/.cache/huggingface/lerobot"))
 OWNER = HOME / "wwqcleverghost"
-LOCAL_EVAL = REPO / "outputs/eval"  # eval runs recorded here and not uploaded yet: id "eval/<run>"
 SPECS = REPO / "examples/xlerobot"
 LABELS = SPECS / "dataset_labels.json"
 OUT = REPO / "outputs/dataset_viewer"
@@ -69,8 +68,6 @@ def scan():
             root = info.parent.parent
             rel = str(root.relative_to(OWNER))
             out.append(dict(id=re.sub(r"/dataset$", "", rel), root=root))
-    for info in sorted(LOCAL_EVAL.glob("*/dataset/meta/info.json")):
-        out.append(dict(id="eval/" + info.parents[2].name, root=info.parent.parent))
     return out
 
 
@@ -92,7 +89,7 @@ def is_eval(root):
 
 
 def root_of(ds_id):
-    p = Path(ds_id) if os.path.isabs(ds_id) else LOCAL_EVAL / ds_id[5:] if ds_id.startswith("eval/") else OWNER / ds_id
+    p = Path(ds_id) if os.path.isabs(ds_id) else OWNER / ds_id
     p = p / "dataset" if (p / "dataset/meta/info.json").exists() else p
     p = p.resolve()
     assert (p / "meta/info.json").exists(), f"no dataset at {ds_id}"
@@ -238,15 +235,17 @@ def stages(ds_id, ep, rule):
                 edits=ed, editable=rule == "fine9")
 
 
-def stage_view(ds_id):
+def stage_view(ds_id, src="live"):
     """Per episode of an eval: the task end (episode_end.csv of eval-scoring/mark_end.py; without it, computed here from the
     live stage of stages.csv, else None: mark_end.py recomputes fine9 from the videos, too slow for this request)
     and, when the eval wrote stages.csv (stage models, lerobot_record_eval.save_stage_log), the live rule stage fed to the
-    model and the model's own guess as runs, plus per frame its probability and (*-progpred) its progress."""
+    model and the model's own guess as runs, plus per frame its probability and (*-progpred) its progress.
+    src="offline": stages_offline.csv instead (same columns; one stage model replayed over every eval, see README)."""
     o = load(ds_id)
     root = o["root"]
     ends = pd.read_csv(root / "episode_end.csv").set_index("episode") if (root / "episode_end.csv").exists() else None
-    log = pd.read_csv(root / "stages.csv") if (root / "stages.csv").exists() else None
+    f = root / ("stages_offline.csv" if src == "offline" else "stages.csv")
+    log = pd.read_csv(f) if f.exists() else None
     out = []
     for ep in o["eps"].index:
         a, st = ep_arrays(o, ep)
@@ -767,7 +766,7 @@ def evaluation(ds_id):
 
 
 def version(ds_id):
-    m = re.match(r"(?:eval[-/])?v(\d+)-", ds_id)  # test sets carry an eval- prefix (naming README, 2026-10-30); eval/ = outputs/eval
+    m = re.match(r"(?:eval-)?v(\d+)-", ds_id)  # test sets carry an eval- prefix (naming README, 2026-10-30)
     return int(m[1]) if m else 0
 
 
@@ -918,7 +917,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/episodes": lambda: episodes(q["id"]),
             "/api/curves": lambda: curves(q["id"], int(q["ep"])),
             "/api/stages": lambda: stages(q["id"], int(q["ep"]), q["rule"]),
-            "/api/stageview": lambda: stage_view(q["id"]),
+            "/api/stageview": lambda: stage_view(q["id"], q.get("src", "live")),
             # std9 (the reference) stays on the command line (--compare); the page shows fine9, what training uses
             "/api/stage_rules": lambda: {k: dict(names=v[0], desc=v[2], vision=v[3]) for k, v in stage_labels.RULES.items() if k != "std9"},
             "/api/specs": spec_list,
@@ -1001,7 +1000,7 @@ def selfcheck():
     assert fail_time(st, ac, 30) == 40 - 15, fail_time(st, ac, 30)
     assert fail_time(np.zeros((200, 12)), np.zeros((200, 12)), 30) == 110
     assert version("v6-handover-curated") == 6 and version("v10-x") == 10 and version("handover2") == 0
-    assert version("eval-v4-flow_h16_s8") == 4 and version("scores-v4-v5") == 0 and version("eval/v6-flow_h16_s8_x") == 6
+    assert version("eval-v4-flow_h16_s8") == 4 and version("scores-v4-v5") == 0
     stage_labels.selfcheck()
 
 

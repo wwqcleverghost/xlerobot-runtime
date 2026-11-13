@@ -1174,6 +1174,11 @@ async function pageQuality(q, view, tools) {
 // page 4: eval scores (docs/workflows/eval-scoring): completion, quality, total with 95% CI, stage funnel, per trial
 // =====================================================================================================
 const STAGE_ZH = ['前往', '抓住', '交接前不掉', '交接成功', '放好'];
+// A failed trial whose note says "<stage>失败" (e.g. "AB对位失败") failed at that stage (user, 2026-11-13): the 9-stage funnels
+// count it as entered that stage and none after it, whatever the rule read later (a gripper closing on nothing reads as B抓住).
+const noteStage = (label, names) => { const n = label && label.note || ''; return names.reduce((b, nm, g) => n.includes(nm + '失败') && (b < 0 || nm.length > names[b].length) ? g : b, -1); };
+const segTop = segs => { const m = (segs || []).filter(q => q[2] >= 0).map(q => q[2]); return m.length ? Math.max(...m) : -1; };
+const failTop = (segs, success, label, names) => { const g = success ? -1 : noteStage(label, names); return g >= 0 ? g : segTop(segs); };
 async function pageEval(q, view, tools) {
   let ids = (q.ds ? q.ds.split(',') : LS.get('eval_ds', [])).filter(i => G.by[i] && G.by[i].eval);
   const setIds = (v, fromPicker) => { ids = v; LS.set('eval_ds', ids); setQuery({ds: ids.join(',')}); if (!fromPicker) picker('multi', ids, d => d.eval, setIds); hist(); detail(); };
@@ -1207,28 +1212,53 @@ async function pageEval(q, view, tools) {
       let r, info;
       try { [r, info] = await Promise.all([api('/api/eval?id=' + encodeURIComponent(id)), episodeInfo(id)]); }
       catch (e) { box.innerHTML = `<h3>${esc(id)}</h3><p class="err">${esc(e.message)}</p>`; continue; }
-      const W = 300, funnel = r.stages.map((s, i) => `<tr><td>${STAGE_ZH[i]}</td><td>${s.k}/${s.n}</td><td>${s.n ? ciBar([s.k / s.n, s.ci[0], s.ci[1]], 160) : '没走到'}</td>
-        <td class="mute">计分 ${fx(s.rate)}</td></tr>`).join('');
       box.innerHTML = `<h3>${esc(id)} <button class="x" style="float:right">移出</button></h3>
         <p>成功 <b>${r.success}</b> ${ciBar(r.success_rate, 100)}　完成度 ${ciBar(r.completion, 100)}　质量 ${ciBar(r.quality, 100)}　<b>总分</b> ${ciBar(r.total, 100)}</p>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start"><div><h4 style="margin:4px 0">阶段漏斗（通过/进入，Wilson 95%）</h4><table class="fn">${funnel}</table></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start"><div><h4 style="margin:4px 0">阶段漏斗（9 阶段 fine9，进入下一阶段 / 进入该阶段，Wilson 95%）</h4><table class="fn fn9"><tr><td class="mute">加载中…</td></tr></table><p class="mute" style="margin:4px 0;max-width:340px">最后一行 = 成功 / 走到复位。失败试次的备注写了“某阶段失败”（如 AB对位失败）时按备注算，否则按规则走到的最远阶段。只是显示；完成度计分仍按原来的 5 个阶段。</p></div>
         <div class="tr" style="min-width:0;flex:1"></div></div>`;
       $('.x', box).onclick = () => setIds(ids.filter(x => x !== id));
-      const list = r.trials.map(t => ({...info[t.ep], ...t, id,
-        start: t.fail != null ? Math.max(t.fail - 45, 0) : 0,
-        title: (t.success ? '<span class="chip ok">成功</span>' : `<span class="chip bad">失败</span> 失败时刻约 ${sec(t.fail)} 秒（红色虚线）`) + ` · 质量 ${fx(t.q)}`}));
+      const title = t => (t.success ? '<span class="chip ok">成功</span>' : `<span class="chip bad">失败</span> 失败时刻约 ${sec(t.fail)} 秒（红色虚线）`) + ` · 质量 ${fx(t.q)}`;
+      const list = r.trials.map(t => ({...info[t.ep], ...t, id, start: t.fail != null ? Math.max(t.fail - 45, 0) : 0}));
+      list.forEach(t => { t.title = title(t); });
+      const byEp = Object.fromEntries(list.map(t => [t.ep, t]));
+      let names9 = [], drawTable = () => {}, repaint = () => {};
+      api('/api/stageview?id=' + encodeURIComponent(id) + '&src=live').then(sv => {  // 9-stage funnel: stage reached = the noted failure stage, else the highest rule stage
+        const rs = sv.episodes.map(e => ({ep: e.ep, segs: e.live})), ok = new Set(sv.episodes.filter(e => e.success).map(e => e.ep)), tb = $('.fn9', box);
+        names9 = sv.names;
+        const top = x => failTop(x.segs, ok.has(x.ep), byEp[x.ep] && byEp[x.ep].label, names9);
+        // noted failure stage: the failure is before the first later return to an earlier stage (a retry at the very end is not it)
+        const refail = x => { const t = byEp[x.ep], g = !t || t.success ? -1 : noteStage(t.label, names9); if (t) t.top9 = segTop(x.segs); if (g < 0 || !x.segs) return;
+          const i = x.segs.findIndex(q => q[2] === g), j = i < 0 ? -1 : x.segs.findIndex((q, k) => k > i && q[2] >= 0 && q[2] < g);
+          if (j >= 0 && x.segs[j][0] - 15 < t.fail) { t.fail = Math.max(x.segs[j][0] - 15, 0); t.start = Math.max(t.fail - 45, 0); t.title = title(t); } };
+        const wil = (k, n) => { const z = 1.96, p = k / n, d = 1 + z * z / n, c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d; return [Math.max(c - h, 0), Math.min(c + h, 1)]; };
+        const paint = () => {
+          const ready = rs.filter(x => x.segs), N = sv.names.length;
+          const ent = g => ready.filter(x => top(x) >= g).length;  // entered stage g
+          tb.innerHTML = sv.names.map((nm, g) => { const n = ent(g), k = g < N - 1 ? ent(g + 1) : ready.filter(x => top(x) >= g && ok.has(x.ep)).length, w = n ? wil(k, n) : [0, 0];
+            return `<tr><td>${g} ${esc(nm)}</td><td>${k}/${n}</td><td>${n ? ciBar([k / n, w[0], w[1]], 160) : '没走到'}</td></tr>`; }).join('') +
+            (ready.length < rs.length ? `<tr><td colspan="3" class="mute">算阶段中 ${rs.length - ready.length} 条</td></tr>` : '');
+        };
+        repaint = paint;
+        rs.forEach(refail); paint(); drawTable();
+        let q = Promise.resolve();  // fine9 recompute decodes wrist videos: one episode at a time
+        rs.forEach(x => { if (!x.segs) q = q.then(() => getStages(id, x.ep, 'fine9').then(st => { x.segs = st.segs; refail(x); paint(); }).catch(() => {})); });
+        q.then(drawTable);
+      }).catch(e => { $('.fn9', box).innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; });
       const dots = t => t.stages.map((v, i) => { const reached = t.stages.slice(0, i).every(Boolean); return `<i class="dot ${!reached ? 'n' : v ? 'p' : 'f'}" title="${STAGE_ZH[i]}：${!reached ? '没走到' : v ? '通过' : '失败'}"></i>`; }).join('');
-      table($('.tr', box), list, [
+      const fail9 = t => { if (t.success) return ''; const g = noteStage(t.label, names9); return g >= 0 ? `<b>${esc(names9[g])}</b> <span class="mute">备注</span>` : t.top9 >= 0 ? `<span class="mute">${esc(names9[t.top9])}（规则）</span>` : ''; };
+      drawTable = () => table($('.tr', box), list, [
         ['ep', '试次', t => `T${t.ep + 1}`],
         ['success', '人工标签', t => `<span class="chip ${t.success ? 'ok' : 'bad'}">${t.success ? '成功' : '失败'}</span>`],
         ['fail', '失败时刻', t => t.fail == null ? '' : `<button>▶ ${sec(t.fail)} 秒</button>`],
+        ['fail9', '失败阶段', fail9, t => t.success ? 99 : (g => g >= 0 ? g : t.top9 ?? -1)(noteStage(t.label, names9))],
         ['stages', '阶段 前往→放好', dots, t => t.stages.reduce((a, b) => a + b, 0)],
         ['q_smooth', '平滑', t => fx(t.q_smooth)], ['q_speed', '速度', t => fx(t.q_speed)], ['q_idle', '不停顿', t => fx(t.q_idle)],
         ['q', '质量', t => `<b>${fx(t.q)}</b>`],
         ['task_s', '用时', t => t.task_s == null ? '–' : fx(t.task_s, 1) + ' s'],
         ['rev_rate', '小幅来回', t => fx(t.rev_rate) + '/s'], ['idle_frac', '停顿占比', t => fx(100 * t.idle_frac, 0) + '%'],
         ['label', '标注', t => tagChips(t.label), t => (t.label && t.label.tags || []).join()],
-      ], (t, shown, k) => openModal(shown.map(x => ({...x, onlabel: l => { x.label = l; }})), k, t.start));
+      ], (t, shown, k) => openModal(shown.map(x => ({...x, onlabel: l => { x.label = l; repaint(); drawTable(); }})), k, t.start));
+      drawTable();
     }
   }
   detail();
@@ -1259,9 +1289,13 @@ async function pageStage(q, view, tools) {
   let ids = (q.ds ? q.ds.split(',') : LS.get('stage_ds', [])).filter(i => G.by[i] && G.by[i].eval);
   const setIds = (v, fromPicker) => { ids = v; LS.set('stage_ds', ids); setQuery({ds: ids.join(',')}); if (!fromPicker) picker('multi', ids, d => d.eval, setIds); draw(); };
   picker('multi', ids, d => d.eval, setIds);
-  tools.innerHTML = `<span class="legend" id="sleg"></span><span class="legend"><span><i style="background:var(--ink);height:2px"></i>规则进度</span>
+  let src = LS.get('stage_src', 'live');
+  tools.innerHTML = `<select id="ssrc" title="模型阶段来源"><option value="live">评测时的模型输出（stages.csv）</option>
+    <option value="offline">同一模型离线重放（stages_offline.csv）</option></select><span class="legend" id="sleg"></span><span class="legend"><span><i style="background:var(--ink);height:2px"></i>规则进度</span>
     <span><i style="background:var(--h);height:2px"></i>模型进度</span><span><b style="color:var(--bad)">▼</b>倒退</span><span><b style="color:var(--orange)">▲</b>跳阶段 / 进度跳变</span><span>实心 = 模型，空心 = 规则</span>
     <span><i style="background:#8886"></i>结束后</span></span>`;
+  $('#ssrc').value = src;
+  $('#ssrc').onchange = ev => { src = ev.target.value; LS.set('stage_src', src); draw(); };
   const rows = [];
   G.cleanup.push(() => rows.forEach(r => r.ro.disconnect()));
   async function draw() {
@@ -1271,7 +1305,7 @@ async function pageStage(q, view, tools) {
     for (const id of ids) {
       const box = el(`<div class="panel"><h3>${esc(id)}</h3><p class="mute">加载中…</p></div>`);
       view.append(box);
-      try { data.push([box, ...await Promise.all([api('/api/stageview?id=' + encodeURIComponent(id)), episodeInfo(id)])]); }
+      try { data.push([box, ...await Promise.all([api('/api/stageview?id=' + encodeURIComponent(id) + '&src=' + src), episodeInfo(id)])]); }
       catch (e) { box.innerHTML = `<h3>${esc(id)}</h3><p class="err">${esc(e.message)}</p>`; }
     }
     if (!data.length) return;
@@ -1283,7 +1317,7 @@ async function pageStage(q, view, tools) {
     for (const [box, d, info] of data) {
       const back = (k) => d.episodes.reduce((s, e) => s + segMarks(e[k]).filter(m => m[1] === 'back').length, 0);
       box.innerHTML = `<h3>${esc(d.id)} <span class="mute" style="font-weight:400">· ${d.episodes.length} 条
-        · 规则阶段：${d.has_log ? '评测时实时输入（stages.csv）' : '离线重算 fine9（这次评测没有 stages.csv）'}
+        · 规则阶段：${d.has_log ? (src === 'offline' ? '离线 fine9，模型 = 离线重放（stages_offline.csv）' : '评测时实时输入（stages.csv）') : src === 'offline' ? '<span class="err">没有 stages_offline.csv</span>，离线重算 fine9' : '离线重算 fine9（这次评测没有 stages.csv）'}
         · 结束：${d.has_end ? 'episode_end.csv' : d.has_log ? '按 stages.csv 现算' : '<span class="err">未标注，运行 eval-scoring/mark_end.py</span>'}
         ${d.has_log ? `· 模型倒退共 <b style="color:var(--bad)">${back('pred')}</b> 次` : ''}</span></h3><div class="srows"></div>`;
       const list = d.episodes.map(e => ({...info[e.ep], ...e, id: d.id, marks: e.end == null ? {} : {keep: [0, e.end]},
@@ -1292,7 +1326,7 @@ async function pageStage(q, view, tools) {
         const r = el(`<div class="srow"><div class="slab"><b>T${e.ep + 1}</b> <span class="chip ${e.success ? 'ok' : 'bad'}">${e.success ? '✓' : '✗'}</span>
           <span title="结束（${e.how}${e.marked ? '' : '，未写入 episode_end.csv'}）/ 录制">${e.end == null ? '–' : (e.end / FPS).toFixed(1)} / ${(e.n / FPS).toFixed(1)} s</span><span class="cnt"></span></div><canvas></canvas></div>`);
         $('.srows', box).append(r);
-        const row = {id: d.id, e, cv: $('canvas', r), rule: e.live, ro: new ResizeObserver(() => paint(row))};
+        const row = {id: d.id, e, label: (info[e.ep] || {}).label, cv: $('canvas', r), rule: e.live, ro: new ResizeObserver(() => paint(row))};
         rows.push(row); row.ro.observe(r);
         if (!row.rule) queue = queue.then(() => getStages(d.id, e.ep, 'fine9').then(s => { row.rule = s.segs; paint(row); summary(); }).catch(err => { row.err = err.message; paint(row); }));
         const at = ev => { const b = row.cv.getBoundingClientRect(); return Math.round((ev.clientX - b.left) / b.width * N); };
@@ -1309,12 +1343,11 @@ async function pageStage(q, view, tools) {
     }
     summary();
     function summary() {  // one line per model: success, how far trials get, time, going back, model vs rule agreement
-      const lab = segs => { const m = (segs || []).filter(s => s[2] >= 0).map(s => s[2]); return m.length ? Math.max(...m) : -1; };
       const per = (rs, k) => rs.length ? rs.reduce((t, r) => t + segMarks(k(r)).filter(m => m[1] === 'back').length, 0) / rs.length : null;
       const at = (segs, n) => { const a = new Int8Array(n).fill(-1); for (const [x, y, g] of segs || []) a.fill(g, x, Math.min(y, n)); return a; };
       const out = data.map(([box, d]) => {
         const rs = rows.filter(r => r.id === d.id), n = rs.length, ok = rs.filter(r => r.e.success).length, ready = rs.filter(r => r.rule);
-        const reach = names.map((_, g) => ready.filter(r => lab(r.rule) >= g).length);
+        const reach = names.map((_, g) => ready.filter(r => failTop(r.rule, r.e.success, r.label, names) >= g).length);  // noted failure stage first
         const t = rs.filter(r => r.e.success && r.e.end != null).map(r => r.e.end / FPS).sort((a, b) => a - b);
         const withPred = rs.filter(r => r.e.pred && r.rule);
         let same = 0, both = 0;
@@ -1326,16 +1359,16 @@ async function pageStage(q, view, tools) {
         }).join('') + '</svg>';
         const bar = (v, col) => `<svg width="60" height="8" style="vertical-align:middle"><rect width="60" height="8" rx="2" fill="var(--soft)"/><rect width="${60 * v}" height="8" rx="2" fill="${col}"/></svg>`;
         return {box, id: d.id, n, ok, funnel, pending: n - ready.length,
-          time: t.length ? t[t.length >> 1] : null, tmin: t[0], tmax: t[t.length - 1],
+          time: t.length ? t[t.length >> 1] : null, mean: t.length ? t.reduce((a, b) => a + b, 0) / t.length : null, tmin: t[0], tmax: t[t.length - 1],
           rback: per(ready, r => r.rule), pback: withPred.length ? per(withPred, r => r.e.pred) : null,
           agree: both ? same / both : null, bar};
       });
-      const short = id => id.replace(/^eval[-/]/, '').replace(/_\d{8}_\d{6}$/, '');
+      const short = id => id.replace(/^eval-/, '');
       table($('.tb', sumBox), out, [
         ['id', '模型', r => `<span class="nm" title="${esc(r.id)}">${esc(short(r.id))}</span>`],
         ['ok', '成功', r => `${r.bar(r.n ? r.ok / r.n : 0, 'var(--ok)')} <b>${r.ok}</b>/${r.n}`, r => r.n ? r.ok / r.n : 0],
         ['funnel', '走到各阶段的试次', r => r.funnel + (r.pending ? ` <span class="mute">算阶段中 ${r.pending}</span>` : ''), r => r.ok],
-        ['time', '成功用时（中位）', r => r.time == null ? '–' : `<b>${r.time.toFixed(1)}</b> s <span class="mute">${r.tmin.toFixed(1)}–${r.tmax.toFixed(1)}</span>`, r => r.time],
+        ['mean', '成功试次平均用时', r => r.mean == null ? '–' : `<b>${r.mean.toFixed(1)}</b> s <span class="mute">中位 ${r.time.toFixed(1)} · ${r.tmin.toFixed(1)}–${r.tmax.toFixed(1)}</span>`, r => r.mean],
         ['rback', '规则倒退 / 条', r => r.rback == null ? '–' : `<b style="color:${r.rback ? 'var(--bad)' : 'inherit'}">${r.rback.toFixed(1)}</b>`, r => r.rback],
         ['pback', '模型倒退 / 条', r => r.pback == null ? '<span class="mute">无输出</span>' : `<b style="color:${r.pback ? 'var(--bad)' : 'inherit'}">${r.pback.toFixed(1)}</b>`, r => r.pback],
         ['agree', '模型 = 规则', r => r.agree == null ? '<span class="mute">无输出</span>' : `${r.bar(r.agree, 'var(--h)')} ${(100 * r.agree).toFixed(0)}%`, r => r.agree],

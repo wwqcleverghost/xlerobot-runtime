@@ -82,10 +82,15 @@ PYTHONPATH=src:docs/workflows/eval-scoring:docs/workflows/handover-dataset-curat
 
 still = 从这一帧起所有手臂关节（指令和从臂）都在最后姿态 3 个单位以内：机器人已经停了，之后是在等人按键。
 
-- `reset`：走到了复位（fine9 第 8 阶段：评测有 `stages.csv` 就用实时阶段，否则用腕部视频离线重算）：结束 = still 和复位第一帧 + 1
-  中较晚的那个，所以结束点一定在复位段里（用户 2026-11-05）。
-- `still`：没走到复位：结束 = still。
-- `human`：机器人一直动到最后 0.5 秒内；结束 = 录制长度。
+走到复位的试次（fine9 第 8 阶段：评测有 `stages.csv` 就用实时阶段，否则用腕部视频离线重算）结束点取复位开始（用户 2026-11-06）：
+很多试次复位没做完就被结束了，算到复位开始是所有试次都有的一段。
+
+- `reset`：结束 = 复位段第一帧。
+
+其他试次：
+
+- `still`：结束 = still。
+- `human`：一直动到最后 0.5 秒内；结束 = 录制长度。
 
 数据集网页的"阶段 / 进度"页画出这个结束点，之后变灰。打分不用它，只用于查看（用户 2026-11-05 决定）。
 
@@ -93,8 +98,8 @@ still = 从这一帧起所有手臂关节（指令和从臂）都在最后姿态
 PYTHONPATH=src python docs/workflows/eval-scoring/mark_end.py ~/.cache/huggingface/lerobot/wwqcleverghost/eval-v8-flow_h16_s8
 ```
 
-2026-11-05（git 79bf9dd6 + 未提交修改）：`eval-v8-flow_h16_s8` 4 placed / 5 still / 1 human；`eval-v6-flow_h16_s8`
-31 placed / 16 still / 3 human。成功的试次在松手后多录了 1.2–10.1 秒；v6 有三个失败试次 0.6 秒就停了（没离开起点），却录了 13.9–44.5 秒。
+2026-11-06（git 6e1599b9 + 未提交修改），成功试次：`eval-v6-flow_h16_s8` 28 reset / 3 human，`eval-v8-flow_h16_s8` 4 reset，
+其他评测集除 `eval-v6-flow_h16_s8_stagepred` 有 1 条 human 外全是 reset。human 的成功试次是人工标成功、但 fine9 没找到复位，所以保留录制长度（v6 ep26、32、38）。
 
 ## 可选：逐帧阶段标签
 

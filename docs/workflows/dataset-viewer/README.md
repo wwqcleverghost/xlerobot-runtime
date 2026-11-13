@@ -3,7 +3,7 @@
 中文：[README.zh.md](README.zh.md)
 
 One local web page, five pages under one shared top bar: **trim review**, **batch playback**, **training-set quality / curate**, **eval scores**, **stages / progress**.
-Datasets are listed automatically from `~/.cache/huggingface/lerobot/wwqcleverghost/` and, as `eval/<run>`, from the eval runs not yet uploaded in `outputs/eval/<run>/dataset/` (eval datasets included, also when nested in
+Datasets are listed automatically from `~/.cache/huggingface/lerobot/wwqcleverghost/` (eval datasets included, also when nested in
 `<dir>/dataset/` or `<dir>/<set>/dataset/`; symlinks under old names and meta-only directories without data files are skipped). A dataset with `success.csv` is an eval; one with human takeovers (`interventions.csv`, `*_takeover`) is DAgger training data, listed with the training sets and not in the eval scores. The top bar shows the dataset's HF revision (for local
 builds: build time and git commit) and the git commit of the current code.
 
@@ -173,6 +173,12 @@ With the rules of [`../eval-scoring/README.md`](../eval-scoring/README.md) (call
   table (human label, the 5 stages, smooth / speed / idle, quality, task time).
 - Failed trials have a "▶ failure moment" button: playback starts 1.5 s before it, a red dashed line marks it on the curves. The moment is
   approximate: 0.5 s before the last grasp ended (tape dropped or released); 3 s before the end when the tape was never held.
+- **Failure stage from the note** (2026-11-13): when the note of a failed trial says "<stage>失败" (a 9-stage name, e.g. `AB对位失败`,
+  `B抓住失败`), the 9-stage funnel in the details, the "失败阶段" (failure stage) column and the funnel of the "阶段 / 进度" page use it:
+  the trial reached that stage and none after it. Without such a note it is the furthest stage the rule read (marked "规则" in the column).
+  The rule reads a gripper closing on nothing as a later stage, so what a person saw wins.
+  With a note, the failure moment is no later than 0.5 s before the first return to an earlier stage after that stage (a retry at the very
+  end is not the failure moment). Display only: completion is still scored on the 5 stages and does not read notes.
 
 Both score pages cache their results in `outputs/dataset_viewer/cache/scores/`; they are recomputed when the dataset's files or a scoring
 script (report.py, score.py, smooth.py, lerobot_dataset_quality.py) change. The first time a history table opens, a background thread
@@ -184,7 +190,7 @@ Bump `SCORE_VERSION` when `_quality` / `_evaluation` in `server.py` change what 
 For the stage models (stage input, stage head, `*-stagepred`, `*-progpred`, see [`../stage-labels/README.md`](../stage-labels/README.md)).
 Pick one or more evals. At the top, **model comparison**, one line per eval (sortable; click a line to jump to its trials):
 success k/n, how many trials reached each of the 9 stages (one bar per stage, its height = the share of trials that got there,
-hover for counts), median time of the successful trials (task end, see below) with min–max, rule and model ▼ per trial, and
+hover for counts), mean time of the successful trials (frame 0 to the task end, see below) with median and min–max, rule and model ▼ per trial, and
 "模型 = 规则" = the share of frames before the end where the model's stage equals the rule's.
 
 Below, one row per trial, all rows on one time axis (gridline every 5 s), so lengths compare at a glance:
@@ -204,6 +210,18 @@ Below, one row per trial, all rows on one time axis (gridline every 5 s), so len
 
 `stages.csv` (episode, frame, rule, pred, prob, progress; -1 / empty = none) is written next to `success.csv` by
 `lerobot_record_eval.py` for every saved trial of a model with a stage input or output (not by `eval_remote_trials.py` yet).
+
+The toolbar select "模型阶段来源" set to "同一模型离线重放" reads `stages_offline.csv` instead (same columns): top band = `fine9`
+recomputed offline from the recording (no hand edits), second band = the stages one stage model gives when the recording is replayed
+through it the way the live eval feeds it (same preprocessing, frame 0 copied into the queue, a new chunk every 8 frames). Every eval,
+including models without a stage output, is then judged by the same model and compares directly. To make it:
+
+```bash
+PYTHONPATH=src:examples/xlerobot python examples/xlerobot/offline_stage_eval.py <out_prefix> ~/.cache/huggingface/lerobot/wwqcleverghost/eval-<model> ... --models stagepred --viewer --duty 1.0
+```
+
+`--models` picks from `head` (stagehead classifier) / `stagepred` / `progpred`, `--viewer` uses the first; `--first_ep N` starts at
+episode N and keeps the other episodes already in the file. Use `--duty 0.3` while a real-robot eval needs the GPU.
 
 ## Auto stage labels (top bar "阶段")
 

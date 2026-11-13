@@ -3,7 +3,7 @@
 English: [README.md](README.md)
 
 一个本地网页，五个页面共用一个顶栏：**裁剪审阅**、**批量播放**、**训练集质量 / 筛选**、**测试集打分**、**阶段 / 进度**。
-数据集从 `~/.cache/huggingface/lerobot/wwqcleverghost/` 自动列出，还没上传的评测 `outputs/eval/<run>/dataset/` 以 `eval/<run>` 列出（含评测数据集，嵌套在 `<dir>/dataset/`、`<dir>/<set>/dataset/`
+数据集从 `~/.cache/huggingface/lerobot/wwqcleverghost/` 自动列出（含评测数据集，嵌套在 `<dir>/dataset/`、`<dir>/<set>/dataset/`
 里的也会找到；旧名字的符号链接跳过；只有元数据、没有数据文件的目录不列出）。有 `success.csv` 的算评测数据集；有人工接管记录 `interventions.csv` 的（`*_takeover`）算 DAgger 训练数据，列在训练数据集里，不进测试集打分。顶栏显示数据集的 HF revision（本地构建的显示构建时间和 git commit）和当前代码的 git commit。
 
 ```bash
@@ -145,6 +145,11 @@ PYTHONPATH=src python docs/workflows/dataset-viewer/curate.py --datasets raw-han
 - **详情**：阶段漏斗（每阶段 `通过/进入`、Wilson 区间、计分用的 (通过+1)/(进入+2)）和逐试次表（人工标签、5 个阶段、平滑 / 速度 / 不停顿、质量、用时）。
 - 失败试次有"▶ 失败时刻"按钮：从失败前 1.5 秒开始播，曲线上红色虚线标出失败时刻。
   失败时刻是近似值：最后一次抓住结束（胶带掉了或松开）前 0.5 秒；从没抓住过的取结束前 3 秒。
+- **按备注定失败阶段**（2026-11-13）：失败试次的备注里写"某阶段失败"（9 阶段的名字，如 `AB对位失败`、`B抓住失败`）时，
+  详情里的 9 阶段漏斗、"失败阶段"列和"阶段 / 进度"页的漏斗都按备注算：该试次走到这个阶段、没走到下一个。
+  没写备注的按规则走到的最远阶段（列里标"规则"）。规则会把夹爪空抓读成后面的阶段，所以以人看的为准。
+  有备注时，失败时刻不晚于该阶段之后第一次退回更早阶段前 0.5 秒（结尾又重新抓一次的不算失败时刻）。
+  只影响显示；完成度计分仍按 5 个阶段，不读备注。
 
 两个分数页的结果缓存在 `outputs/dataset_viewer/cache/scores/`，数据文件或打分脚本（report.py、score.py、smooth.py、
 lerobot_dataset_quality.py）一改就重算。第一次打开历史表时后台线程算缺的（全部约 1 分钟），表格边算边更新，之后打开不到 1 秒。
@@ -154,7 +159,7 @@ lerobot_dataset_quality.py）一改就重算。第一次打开历史表时后台
 
 给阶段模型用（阶段输入、阶段头、`*-stagepred`、`*-progpred`，见 [`../stage-labels/README.zh.md`](../stage-labels/README.zh.md)）。
 选一个或多个评测。最上面是**模型对比**，每个评测一行（可排序；点一行跳到它的试次）：成功 k/n；走到 9 个阶段各有几条
-（每个阶段一根柱，高度 = 走到的试次比例，悬停看条数）；成功试次的用时中位数（到任务结束，见下）和最短–最长；
+（每个阶段一根柱，高度 = 走到的试次比例，悬停看条数）；成功试次的平均用时（从第 0 帧到任务结束，见下），附中位数和最短–最长；
 每条的规则 / 模型倒退次数；"模型 = 规则" = 结束前模型阶段和规则阶段相同的帧占比。
 
 下面每个试次一行，所有行共用一条时间轴（每 5 秒一条竖线），长短一眼可比：
@@ -173,6 +178,17 @@ lerobot_dataset_quality.py）一改就重算。第一次打开历史表时后台
 
 `stages.csv`（episode, frame, rule, pred, prob, progress；-1 / 空 = 没有）由 `lerobot_record_eval.py` 在每个保存的试次后写在
 `success.csv` 旁边，只有带阶段输入或输出的模型才写（`eval_remote_trials.py` 还没有）。
+
+工具栏的"模型阶段来源"下拉框选"同一模型离线重放"时，改读 `stages_offline.csv`（同样的列）：上面色带 = 从录像离线重算的 `fine9`
+（不含手改），第二条 = 一个阶段模型按评测时的方式（同样的预处理、第 0 帧复制填满队列、每 8 帧生成一次）重放这条录像给出的阶段。
+这样所有评测（包括没有阶段输出的模型）都用同一个模型判断，可以直接比较。生成方法：
+
+```bash
+PYTHONPATH=src:examples/xlerobot python examples/xlerobot/offline_stage_eval.py <输出前缀> ~/.cache/huggingface/lerobot/wwqcleverghost/eval-<模型> ... --models stagepred --viewer --duty 1.0
+```
+
+`--models` 选 `head`（stagehead 分类头）/ `stagepred` / `progpred`，`--viewer` 用第一个模型；`--first_ep N` 从第 N 条开始，已有的其他条保留。
+没有 GPU 空闲时用 `--duty 0.3`，给真机评测让出 GPU。
 
 ## 自动阶段标签（顶栏"阶段"）
 
