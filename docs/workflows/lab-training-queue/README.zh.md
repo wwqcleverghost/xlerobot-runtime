@@ -8,7 +8,14 @@ English: [README.md](README.md)
 只能通过它自己开的反向隧道连接：`ssh -J server6 -p <2222|2223> marmotlab@localhost`）。
 先看 `nvidia-smi` 和进程归属；实验室其他人的任务随时会来去。
 
-本目录的脚本（用 rsync 拷到机器上，不要用 scp 覆盖正在运行的副本）：
+本目录的脚本直接从机器上的 git 仓库里运行（先 `git pull --ff-only`，整套流程见 [`../sync/`](../sync/README.zh.md)），
+不再拷到 `<W>` 下。下面命令里的 `queue_v3.sh` 指 `<W>/xlerobot-runtime/docs/workflows/lab-training-queue/queue_v3.sh`。
+- 训练集从 HF 来：`<W>/data/<训练集>` 不存在时 `queue_v3.sh` 自己下载，并把下载到的 HF 提交写进 `<W>/data/<训练集>/REVISION`；
+  目录在但没有 `REVISION`（不是从 HF 下载的）时跳过这个任务，不会覆盖本地数据。每次启动在 `<W>/logs/<模型>.log` 写一行
+  `=== <时间> start <模型> git <提交> data <训练集>@<revision>`。
+- `upload_model.py <模型>` — 训练完上传最终 EMA 策略、训练配置、`train.log` 和带上面那几行的模型卡片到私有 HF 仓库，并核对文件大小。
+
+脚本：
 - `queue_v3.sh` — 在一张 GPU 上依次跑 Flow 任务：`flow`、`flow:strict`、
   `flow:sepenc`、`flow:noshift`；名字在磁盘、HF、W&B 上统一以 `dp_` 开头（V5 数据）。跳过已完成的 run，崩溃后从
   最后一个 checkpoint 续训（每次等 5 分钟，最多 20 次）。`WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`

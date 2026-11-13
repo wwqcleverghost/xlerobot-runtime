@@ -8,7 +8,17 @@ Machines (shared `marmot` account, see memory `lab-training-servers`): server6 1
 only reachable via a reverse tunnel it opens: `ssh -J server6 -p <2222|2223> marmotlab@localhost`).
 Check `nvidia-smi` + process owners first; other lab members' jobs come and go.
 
-Scripts in this directory (copy to the machine with rsync, never scp over a running copy):
+The scripts in this directory run straight from the git checkout on the machine (`git pull --ff-only` first; the whole
+flow is in [`../sync/`](../sync/README.md)); they are no longer copied into `<W>`. `queue_v3.sh` in the commands below
+means `<W>/xlerobot-runtime/docs/workflows/lab-training-queue/queue_v3.sh`.
+- Training sets come from HF: when `<W>/data/<training set>` is missing, `queue_v3.sh` downloads it and writes the HF commit
+  it got into `<W>/data/<training set>/REVISION`; a folder without `REVISION` (not downloaded from HF) makes the job skip,
+  local data is never overwritten. Every start adds a line
+  `=== <time> start <model> git <commit> data <training set>@<revision>` to `<W>/logs/<model>.log`.
+- `upload_model.py <model>` — after training, uploads the final EMA policy, train config, `train.log` and a model card with
+  those lines to a private HF repo and checks the file sizes.
+
+Scripts:
 - `queue_v3.sh` — runs Flow jobs one after another on one GPU: `flow`, `flow:strict`,
   `flow:sepenc`, `flow:noshift`; names start with `dp_` consistently on disk, HF and W&B (V5 data). Skips finished runs, resumes from
   the last checkpoint after a crash (5 minutes apart, up to 20 tries). `WQ=/media/data/wwq GPU=<n> NUM_WORKERS=<n> setsid -f bash queue_v3.sh <jobs> >> logs/queue_v3_gpu<n>.log 2>&1 < /dev/null`

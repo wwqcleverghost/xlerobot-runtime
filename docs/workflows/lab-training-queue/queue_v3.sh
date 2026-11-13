@@ -80,8 +80,7 @@ for job in "$@"; do
     flow:v6stagehead) name=v6-flow_h16_s8_stagelabel_stagehead data=v6-handover-curated-stagelabel steps=140000 keep=3
       policy=("${FLOW[@]}" --policy.stage_head_weight=0.1) ;;
     flow:v6rabc) name=v6-flow_h16_s8_rabc data=v6-handover-curated-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}"
-      "--dataset.drop_names=[observation.environment_state]" --use_rabc=true --rabc_kappa=0.027)
-      [ -n "$DRY" ] || $PY examples/xlerobot/stage_progress.py --root $W/data/$data || continue ;;
+      "--dataset.drop_names=[observation.environment_state]" --use_rabc=true --rabc_kappa=0.027) ;;
     flow:v6stagepred) name=v6-flow_h16_s8_stagepred data=v6-handover-curated-stagepred steps=140000 keep=3 policy=("${FLOW[@]}"
       "--dataset.drop_names=[observation.environment_state]") ;;
     flow:v6progpred) name=v6-flow_h16_s8_progpred data=v6-handover-curated-progpred steps=140000 keep=3 policy=("${FLOW[@]}"
@@ -129,8 +128,22 @@ for job in "$@"; do
     [ -f $bcfg ] || { echo "$(date '+%F %T') no $bcfg, skip $name"; continue; }
     data=$($PY -c 'import json, sys; print(json.load(open(sys.argv[1]))["dataset"]["repo_id"].split("/")[1])' $bcfg)
   fi
+  # Training sets live on HF and are uploaded before training (docs/workflows/sync): one that is missing here is
+  # downloaded. REVISION = the HF commit that was downloaded; it goes into the start line of the log. A local copy
+  # without REVISION did not come from HF and is never overwritten.
+  d=${root:-$W/data/$data}
+  if [ -z "$DRY" ] && [ -z "$root" ] && [ ! -f $d/REVISION ]; then
+    [ -e $d ] && { echo "$(date '+%F %T') $d has no REVISION (not from HF): upload it first, skip $name"; continue; }
+    HF_HUB_OFFLINE=0 $PY -c 'import sys
+from huggingface_hub import HfApi, snapshot_download
+repo, d = sys.argv[1:]
+rev = HfApi().dataset_info(repo).sha
+snapshot_download(repo, repo_type="dataset", revision=rev, local_dir=d)
+open(d + "/REVISION", "w").write(rev + "\n")' wwqcleverghost/$data $d || { echo "$(date '+%F %T') cannot download $data, skip $name"; continue; }
+  fi
+  [ $job = flow:v6rabc ] && [ -z "$DRY" ] && { $PY examples/xlerobot/stage_progress.py --root $d || continue; }
   cmd=($PY -m lerobot.scripts.lerobot_train
-    --dataset.repo_id=wwqcleverghost/$data --dataset.root=${root:-$W/data/$data}
+    --dataset.repo_id=wwqcleverghost/$data --dataset.root=$d
     --dataset.image_transforms.enable=true --dataset.image_transforms.on_gpu=true
     --policy.device=cuda --policy.push_to_hub=false "${policy[@]}"
     --batch_size=$bs --steps=$steps --save_freq=$save --ema_decay=0.9999 --num_workers=$workers
@@ -142,7 +155,8 @@ for job in "$@"; do
   fi
   if [ -n "$DRY" ]; then echo "$name: ${cmd[*]}"; continue; fi
   echo "$(date '+%F %T') start $name"
-  echo "=== $(date "+%F %T") start $name" >> $log
+  # code commit and training set revision of this start: upload_model.py copies these lines into the model card
+  echo "=== $(date "+%F %T") start $name git $(git rev-parse --short HEAD)$(git diff --quiet HEAD || echo +dirty) data $data@$(cut -c1-8 $d/REVISION 2>/dev/null)" >> $log
   # server4 crashes DataLoader workers now and then (suspected bad RAM): resume from the last checkpoint, or
   # restart from scratch when there is none yet, at most 20 times, 5 minutes apart (server6 2026-11-03: a full
   # /dev/shm lasted minutes and used up 5 immediate retries in 90 s, leaving the GPU idle for 9 hours).
