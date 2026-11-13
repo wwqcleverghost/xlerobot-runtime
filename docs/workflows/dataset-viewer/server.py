@@ -927,6 +927,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/quality": lambda: quality(q["id"]),
             "/api/eval": lambda: evaluation(q["id"]),
             "/api/history": lambda: history(q["kind"]),
+            # the model table docs/models.csv (docs/workflows/sync/models.py), as it is
+            "/api/models": lambda: dict(rows=pd.read_csv(REPO / "docs/models.csv", dtype=str, keep_default_na=False).to_dict("records")),
             "/api/curate/presets": lambda: dict(presets=curate.presets(), rules=curate.RULES, default=curate.DEFAULT),
         }
         if u.path in routes:

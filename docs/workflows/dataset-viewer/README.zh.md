@@ -2,7 +2,8 @@
 
 English: [README.md](README.md)
 
-一个本地网页，五个页面共用一个顶栏：**裁剪审阅**、**批量播放**、**训练集质量 / 筛选**、**测试集打分**、**阶段 / 进度**。
+一个本地网页，六个页面共用一个顶栏，按工作流分成三组：数据集（**裁剪审阅**、**批量播放**、**训练集质量 / 筛选**）、模型（**模型总表**）、
+评测（**测试集打分**、**阶段 / 进度**）。
 数据集从 `~/.cache/huggingface/lerobot/wwqcleverghost/` 自动列出（含评测数据集，嵌套在 `<dir>/dataset/`、`<dir>/<set>/dataset/`
 里的也会找到；旧名字的符号链接跳过；只有元数据、没有数据文件的目录不列出）。有 `success.csv` 的算评测数据集；有人工接管记录 `interventions.csv` 的（`*_takeover`）算 DAgger 训练数据，列在训练数据集里，不进测试集打分。顶栏显示数据集的 HF revision（本地构建的显示构建时间和 git commit）和当前代码的 git commit。
 
@@ -190,6 +191,13 @@ PYTHONPATH=src:examples/xlerobot python examples/xlerobot/offline_stage_eval.py 
 `--models` 选 `head`（stagehead 分类头）/ `stagepred` / `progpred`，`--viewer` 用第一个模型；`--first_ep N` 从第 N 条开始，已有的其他条保留。
 没有 GPU 空闲时用 `--duty 0.3`，给真机评测让出 GPU。
 
+## 6. 模型总表（`#models`）
+
+`docs/models.csv` 原样显示，一行一个 HF 上的模型：说明、训练集（带 revision）、步数、训练用的代码提交、W&B 曲线链接、各个评测的
+成功数 / 试次数。这台机器上有的训练集点名字进裁剪审阅页，有的评测点名字进测试集打分页；灰色表示这台机器上没有那份数据。
+上方输入框按名字、说明、训练集筛选，点表头排序（评测列按第一个评测的成功率）。表格本身用 `python docs/workflows/sync/models.py`
+从 HF 重新生成，说明列手写，见 [`../sync/`](../sync/README.zh.md)；网页不改它。
+
 ## 自动阶段标签（顶栏"阶段"）
 
 顶栏的"阶段"下拉框选一个规则后，每组关节曲线上方画一条彩色阶段条（裁剪审阅卡片和各页面的大图都有），悬停显示阶段名和时间段。
@@ -206,7 +214,7 @@ PYTHONPATH=src:examples/xlerobot python examples/xlerobot/offline_stage_eval.py 
 ## 文件
 
 - `server.py`：服务和 JSON API（`/api/datasets`、`episodes`、`curves`、`stages`、`stageview`、`stage_rules`、`frame`、`review`、`review/edit`、`label`、`rebuild`、`builds`、
-  `quality`、`eval`、`history`、`curate/*`，以及 `/video`）。`python server.py` 启动时先跑自检。
-- `index.html`：顶栏和样式；`app.js`：五个页面（旧链接 `#curate` 会打开训练集质量页）。
+  `quality`、`eval`、`history`、`models`、`curate/*`，以及 `/video`）。`python server.py` 启动时先跑自检。
+- `index.html`：顶栏和样式；`app.js`：六个页面（旧链接 `#curate` 会打开训练集质量页）。
 - `curate.py`：筛选的指标、条件和命令行；`presets/`：筛选预设（进 git）。
 - 运行时生成（不进 git）：`outputs/dataset_viewer/`（静帧和分数缓存、spec 备份、构建记录和日志）。

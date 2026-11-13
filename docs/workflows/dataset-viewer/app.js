@@ -1,4 +1,4 @@
-// Dataset viewer front end: one shared top bar, four pages (#review #batch #quality #eval). Data from server.py.
+// Dataset viewer front end: one shared top bar, six pages (#review #batch #quality #models #eval #stage). Data from server.py.
 'use strict';
 const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
@@ -1422,7 +1422,34 @@ async function pageStage(q, view, tools) {
 // boot
 // =====================================================================================================
 
-const PAGES = {review: pageReview, batch: pageBatch, quality: pageQuality, eval: pageEval, stage: pageStage, curate: pageQuality};  // #curate: old links
+// ---------- models: docs/models.csv (docs/workflows/sync/models.py), one row per model on HF ----------
+// What it is, what trained it, its evals. A training set / eval that is on this machine links to its page; the rest is grey.
+async function pageModels(q, view, tools) {
+  $('#picker').innerHTML = '';
+  const {rows} = await api('/api/models');
+  tools.innerHTML = `<input id="mq" placeholder="筛选：名字、说明、训练集" style="width:220px"> <span class="mute">${rows.length} 个模型，来自 docs/models.csv
+    （python docs/workflows/sync/models.py 从 HF 重新生成，说明列手写）。评测列 = 成功数 / 试次数。灰色 = 这台机器上没有这份数据。点表头排序。</span>`;
+  view.innerHTML = '<div class="panel models"><div class="tb"></div></div>';
+  showInfo([], rows.length + ' 个模型');
+  const link = (id, page, text) => G.by[id] ? `<a href="#${page}?ds=${encodeURIComponent(id)}">${esc(text)}</a>` : `<span class="mute">${esc(text)}</span>`;
+  const evals = r => (r.eval ? r.eval.split('; ') : []).map(e => { const [nr, kn] = e.split(' '), id = nr.split('@')[0];
+    return link(id, 'eval', id.slice(5 + r.model.length).replace(/^_/, '') || '评测') + ` <b>${esc(kn)}</b>`; }).join('<br>');
+  const rate = r => { const m = /(\d+)\/(\d+)/.exec(r.eval || ''); return m && +m[2] ? m[1] / m[2] : null; };  // of its first eval
+  const draw = () => { const s = $('#mq').value.trim().toLowerCase();
+    table($('.tb', view), rows.filter(r => !s || (r.model + r.note_zh + r.dataset).toLowerCase().includes(s)), [
+      ['model', '模型', r => `<b>${esc(r.model)}</b>`],
+      ['note_zh', '说明', r => esc(r.note_zh)],
+      ['dataset', '训练集', r => link(r.dataset, 'review', r.dataset) + (r.data_rev ? ` <span class="mute">@${esc(r.data_rev)}</span>` : '')],
+      ['steps', '步数', r => r.steps ? r.steps / 1000 + 'K' : '', r => +r.steps],
+      ['git', '代码', r => `<span class="mute">${esc(r.git)}</span>`],
+      ['wandb', 'W&B', r => r.wandb ? `<a target="_blank" href="https://wandb.ai/wwqcleverghost/${esc(r.wandb.replace('/', '/runs/'))}">曲线</a>` : ''],
+      ['eval', '评测', evals, rate],
+    ], () => {}); };
+  $('#mq').oninput = draw;
+  draw();
+}
+
+const PAGES = {review: pageReview, batch: pageBatch, quality: pageQuality, models: pageModels, eval: pageEval, stage: pageStage, curate: pageQuality};  // #curate: old links
 async function show() {
   G.cleanup.splice(0).forEach(f => f());
   clearTimeout(G.buildT); clearTimeout(G.histT);

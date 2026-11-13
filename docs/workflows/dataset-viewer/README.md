@@ -2,7 +2,8 @@
 
 中文：[README.zh.md](README.zh.md)
 
-One local web page, five pages under one shared top bar: **trim review**, **batch playback**, **training-set quality / curate**, **eval scores**, **stages / progress**.
+One local web page, six pages under one shared top bar, in three groups that follow the workflow: datasets (**trim review**, **batch playback**,
+**training-set quality / curate**), models (**model table**), evals (**eval scores**, **stages / progress**).
 Datasets are listed automatically from `~/.cache/huggingface/lerobot/wwqcleverghost/` (eval datasets included, also when nested in
 `<dir>/dataset/` or `<dir>/<set>/dataset/`; symlinks under old names and meta-only directories without data files are skipped). A dataset with `success.csv` is an eval; one with human takeovers (`interventions.csv`, `*_takeover`) is DAgger training data, listed with the training sets and not in the eval scores. The top bar shows the dataset's HF revision (for local
 builds: build time and git commit) and the git commit of the current code.
@@ -223,6 +224,14 @@ PYTHONPATH=src:examples/xlerobot python examples/xlerobot/offline_stage_eval.py 
 `--models` picks from `head` (stagehead classifier) / `stagepred` / `progpred`, `--viewer` uses the first; `--first_ep N` starts at
 episode N and keeps the other episodes already in the file. Use `--duty 0.3` while a real-robot eval needs the GPU.
 
+## 6. Model table (`#models`)
+
+Shows `docs/models.csv` as it is, one row per model on HF: note, training set (with revision), steps, the code commit it was trained
+with, a link to the W&B curves, and successes / trials of each of its evals. A training set that is on this machine links to its trim
+review page, an eval to its eval scores page; grey means that data is not on this machine. The box on top filters by name, note and
+training set; click a header to sort (the eval column by the success rate of the first eval). The table itself is regenerated from HF
+with `python docs/workflows/sync/models.py`, the note columns are typed, see [`../sync/`](../sync/README.md); the page never changes it.
+
 ## Auto stage labels (top bar "阶段")
 
 A select in the top bar draws per-frame task stages as a colored band above every set of joint curves (review cards and the episode
@@ -241,7 +250,7 @@ Note: the stage the robot computes live in eval has no hand edits (see "Hand cor
 ## Files
 
 - `server.py`: server and JSON API (`/api/datasets`, `episodes`, `curves`, `stages`, `stageview`, `stage_rules`, `frame`, `review`, `review/edit`, `label`, `rebuild`, `builds`,
-  `quality`, `eval`, `history`, `curate/*`, plus `/video`). `python server.py` runs its self-check first.
-- `index.html`: top bar and styles; `app.js`: the five pages (old `#curate` links open the training-set quality page).
+  `quality`, `eval`, `history`, `models`, `curate/*`, plus `/video`). `python server.py` runs its self-check first.
+- `index.html`: top bar and styles; `app.js`: the six pages (old `#curate` links open the training-set quality page).
 - `curate.py`: curate metrics, conditions and command line; `presets/`: curate presets (in git).
 - Generated at run time (not in git): `outputs/dataset_viewer/` (still and score caches, spec backups, build records and logs).
