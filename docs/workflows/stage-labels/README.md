@@ -246,9 +246,9 @@ the action. The action stats of those 9 dims are min −1 / max 1, so normalizat
 
 | mode | target of the last 9 action dims | eval: s update every 8 executed steps |
 |---|---|---|
-| `self` | s itself | s ← ŝ of step 8 |
-| `delta` | true s − the noisy input s (pull back to the truth) | s ← s + Δs of step 8, clipped to 0..1 |
-| `deltainc` | true s − true current s (pure increments) | same |
+| `self` | s itself | s ← ŝ of step 9 (8 frames on, when the next plan is made) |
+| `delta` | true s − the noisy input s (pull back to the truth) | s ← s + Δs of step 9, clipped to 0..1 |
+| `deltainc` | true s − true current s (pure increments) | v ← v + the sum of the 9 dims of Δs of step 9 (v = sum(s), clipped to 0..9), s rebuilt from v as a cumulative array |
 
 - Training gives the policy a deliberately wrong s, like the errors it makes when s is its own. The error is added to v = sum(s)
   (stage units): N(0, 0.12) on every sample, plus on 25% of samples a jump (exponential, mean 1 stage, capped at 3), early 40% /
@@ -286,9 +286,30 @@ the current one, so stepping back to do better (re-grasp, re-align) is not down-
 | `flow:v6prog<mode>rabc` | `v6-flow_h16_s8_prog<mode>_rabc` | plus RA-BC (90-frame look-ahead, κ = 0.15) |
 | `est:v6mix20/35/50` | `v6-progcheck_mix20/35/50` | separate estimator, 40K steps, 20 / 35 / 50% wrong guesses |
 
-**Eval is not wired yet**: the eval scripts feed the fine9 one-hot to any model with `observation.environment_state`, so these
-models cannot be evaluated as is. Eval first needs: s starts at all zeros and is updated as in the table above (progself can also
-use the s2 of its check head or of the separate estimator). No debounce and no lock after completion.
+**Eval** (wired 2026-11-12): `lerobot_record_eval.py` and `eval_remote_trials.py` switch **automatically** to a progress memory
+(`ProgressMemory`) when the model config has `progress_mode`, instead of feeding the fine9 one-hot: s starts at all zeros in every
+trial and is updated as in the table above when the last (8th) action of a chunk has been taken, kept in 0..1. It uses the chunk's next step, the 9th
+(`diffusion.progress_next`): step 1 is the planning frame, step 8 is only 7 frames on and the next plan is made 8 frames on;
+with step 8 deltainc counts 7 frames out of every 8 and ends near 7.9 instead of 9 (offline replay 2026-11-12 of ep3 / ep20, real
+weights, demo frames, s closed loop, stage agreement: step 8 0.44 / 0.55, step 9 0.66 / 0.80; progself 0.95 / 0.93, progdelta
+0.84 / 0.84). Startup prints
+`Progress memory on: ...` and a `[mem]` line follows every 0.1 stage of change. No debounce and no lock after completion; s stays
+as it is during a human takeover. In `stages.csv` these models have `rule` = −1, `pred` = the stage of s, `progress` = sum(s) / 9.
+Run it like any other model: `outputs/eval/start_hf_eval.sh <model name>`.
+
+s2 (wired 2026-11-13, `self` mode only): set the environment variable `PROGRESS_S2=head` (the model's own check head) or
+`PROGRESS_S2=<estimator dir>` (e.g. `outputs/hf_models/v6-progcheck_mix35`) before starting. Before every new plan, s2 is computed
+from the new observation, the s the last chunk was planned from and the s1 it predicted (`policy.progress_check`), and replaces the
+progress in memory. Startup prints `Progress check s2 on: ...` and `[s2]` lines follow while running; if it is not printed, it is off.
+`v6-progcheck_mix<NN>` is only an estimator and cannot be evaluated alone. Unit tests are in
+`tests/policies/test_diffusion_progress.py` (random weights); robot evals are the `eval-v6-flow_h16_s8_prog*` test sets.
+
+deltainc does not add per dim (2026-11-13): pure increments have no pull back, and clipping every dim to 0..1 keeps the negative error on
+finished stages and drops the positive, so such a dim sinks below 1 for good. Offline check (real weights, ep3 / 20 / 41 / 10 / 30 / 50 of
+`v6-handover-curated-cumprog`): with the true s fed at every plan, summed predicted increments ÷ summed true increments = 1.06 (0.99–1.17 per
+episode), so the amounts are right; but with s closed loop and per-dim clipping the final progress was 8.76 / 8.20 / 7.50 / 8.25 / 8.64 / 8.17
+(truth 9, ep41 8). Adding only the total to v and rebuilding the cumulative array (the only shape of the training input) gives
+9.00 / 8.98 / 7.55 / 8.64 / 9.00 / 9.00. self and delta are unchanged.
 
 ## Eval
 

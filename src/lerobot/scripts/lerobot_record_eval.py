@@ -26,6 +26,8 @@ Differences from lerobot-record (only when --policy is set and no --teleop):
     (default: the dataset in the policy's train_config.json); base velocities are held at 0.
   - A policy trained on a *-stagelabel dataset (input observation.environment_state) gets the live task stage every frame,
     turned on automatically ("Stage input on" at startup; needs the wrist cameras). See docs/workflows/stage-labels.
+  - A progress feedback policy (--policy.progress_mode, *_prog<mode> models) keeps its own stage progress instead:
+    "Progress memory on" at startup, "[mem]" lines while running, no wrist-camera rule involved.
 
 Example (XLerobot, host already running on the robot):
 ```shell
@@ -113,6 +115,8 @@ import json
 import logging
 import sys
 import math
+import os
+import torch
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -182,6 +186,7 @@ from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardTeleop
 from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_ENV_STATE, OBS_STATE, OBS_STR
 from lerobot.utils.control_utils import (
     ask_success,
+    flush_stdin,
     is_headless,
     predict_action,
     sanity_check_dataset_name,
@@ -382,6 +387,7 @@ def record_loop(
     # [eval] stage input: a policy trained with observation.environment_state (docs/workflows/stage-labels) gets the live
     # fine9 stage each frame; it is turned on by the policy's inputs, not by a flag, and is fed to the policy only (not recorded)
     stage = live_stage(policy)
+    memory = isinstance(stage, ProgressMemory)  # [eval] progress feedback: the model keeps its own progress s
     last_cmd, stage_now, pred_stage = None, None, None
     # [eval] per-frame [frame, rule stage, model stage, prob, progress] of stage models, saved to stages.csv (save_stage_log)
     events["stage_log"] = log = []
@@ -410,7 +416,7 @@ def record_loop(
         obs_processed = robot_observation_processor(obs)
         if stage is not None:  # [eval] every frame, takeover frames too, so the stage is current when the policy resumes
             prev_stage, stage_now = stage_now, stage(obs, last_cmd)
-            if prev_stage is None or prev_stage.argmax() != stage_now.argmax():
+            if not memory and (prev_stage is None or prev_stage.argmax() != stage_now.argmax()):
                 print(f"[stage] {timestamp:6.2f}s  {int(stage_now.argmax())}", flush=True)  # 0-8 = STAGES order
 
         if policy is not None or dataset is not None:
@@ -473,7 +479,11 @@ def record_loop(
             act_processed_policy: RobotAction = make_robot_action(action_values, dataset.features)
             extra = action_values.reshape(-1)[len(dataset.features[ACTION]["names"]):]
             head = getattr(getattr(policy, "diffusion", None), "stage_head_pred", None)
-            if head is not None:  # [eval] stagehead: its own stage guess (updated once per chunk) vs the rule's input
+            if memory:  # [eval] progress feedback: s is updated after the chunk's last action (ProgressMemory)
+                pred_now, prog_now = stage.update(policy, timestamp)
+                if prog_now >= 0.97:  # [eval] whole task 97% (stage 9/9) -> same as pressing Right arrow: end trial, arms reset
+                    events["exit_early"] = True
+            elif head is not None:  # [eval] stagehead: its own stage guess (updated once per chunk) vs the rule's input
                 pred = int(head[0].argmax())
                 pred_now, prob_now = pred, float(head[0, pred])
                 if pred != pred_stage:
@@ -567,7 +577,7 @@ def record_loop(
             )
             frame = {**observation_frame, **action_frame, "task": single_task}
             if policy is not None:  # kept only if it has a stage (save_stage_log)
-                log.append([dataset.episode_buffer["size"], -1 if stage_now is None else int(stage_now.argmax()),
+                log.append([dataset.episode_buffer["size"], -1 if stage_now is None or memory else int(stage_now.argmax()),
                             pred_now, prob_now, prog_now])
             dataset.add_frame(frame)
 
@@ -590,11 +600,100 @@ BASE_STOP = {"x.vel": 0.0, "y.vel": 0.0, "theta.vel": 0.0}
 XLEROBOT = Path(__file__).resolve().parents[3] / "examples/xlerobot"  # stage_labels.py
 
 
+class ProgressMemory:
+    """[eval] The cumulative stage progress s of a progress feedback policy (config.progress_mode, docs/workflows/stage-labels
+    "Stage progress feedback"): the model's own memory, fed back as observation.environment_state. All zeros at the start
+    of a trial; when the last action of a chunk has been taken, s <- the progress dims the chunk predicted for the next
+    frame, i.e. the frame the next chunk is planned from ("self"), or s <- s + them ("delta" / "deltainc"), kept in 0..1.
+    (Not those of the last action taken: it is one frame earlier, and "deltainc" would count 7 frames out of every 8.)
+    No debounce, no lock after completion."""
+
+    def __init__(self, policy):
+        self.mode = policy.config.progress_mode
+        self.s = np.zeros(policy.config.input_features[OBS_ENV_STATE].shape, dtype=np.float32)
+        self.shown = None
+        self.s_in = self.s1 = self.check = None
+
+    def attach_check(self, policy, src):
+        """[s2] PROGRESS_S2=head|<model dir>: at every new plan the progress check (the policy's own check head, or a separate
+        estimator model) replaces the memory by its estimate s2 of the current s, from the new observation, the s the last chunk
+        was planned from and the s1 it predicted (progress_mode "self" only). Without it s <- s1 as before."""
+        assert self.mode == "self", "PROGRESS_S2 is only wired for progress_mode self"
+        if src == "head":
+            self.check = policy
+        else:
+            if getattr(policy, "_s2_est", None) is None:
+                from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
+
+                policy._s2_est = DiffusionPolicy.from_pretrained(src).to(policy.config.device).eval()
+            self.check = policy._s2_est
+        policy._mem = self
+        if not getattr(policy, "_s2_wrapped", False):  # record_loop makes a new ProgressMemory per trial: wrap only once
+            orig = policy.select_action
+
+            def select_action(batch, *a, **k):
+                m = policy._mem
+                if m.check is not None and m.s1 is not None and len(policy._queues[ACTION]) == 0:
+                    m.correct(batch)
+                return orig(batch, *a, **k)
+
+            policy.select_action, policy._s2_wrapped = select_action, True
+        print(f"Progress check s2 on: {src}", flush=True)
+
+    @torch.no_grad()
+    def correct(self, batch):
+        ref = batch[OBS_ENV_STATE]
+        dev = ref.device
+        t = lambda x: torch.as_tensor(x, dtype=torch.float32, device=dev)[None]  # noqa: E731
+        s2 = self.check.progress_check(batch, t(self.s_in), t(self.s1))[0].float().clamp(0, 1)
+        print(f"[s2]    s1 {self.s1.sum():.2f} -> s2 {float(s2.sum()):.2f} (stage units, 0-9)", flush=True)
+        self.s, self.s1 = s2.cpu().numpy().astype(np.float32), None
+        batch[OBS_ENV_STATE] = s2.reshape(ref.shape).to(ref.dtype)
+
+    def __call__(self, obs=None, last_cmd=None) -> np.ndarray:  # same call as stage_labels.LiveStage
+        return self.s
+
+    def update(self, policy, timestamp: float = 0.0) -> tuple[int, float]:
+        """Call after every predict_action. Returns (stage 0-8, progress 0..1)."""
+        if len(policy._queues[ACTION]) == 0:  # that was the chunk's last action; the next call plans from the new s
+            # progress dims are not normalized (action stats min -1 / max 1, add_stage_target.py --kind cumprog)
+            extra = policy.diffusion.progress_next[0].float().cpu().numpy()
+            if self.mode == "deltainc":
+                # Pure increments have no pull back to the truth. Clipping every element to 0..1 keeps the negative noise
+                # on finished stages (they sink below 1 for good) and drops the positive, so s ended at 7.5-8.8 instead
+                # of 9 on demos although the summed increments are right (pred / true 1.06). So add the total increment
+                # to v = sum(s) and rebuild the cumulative array, the only shape the model saw in training.
+                v = np.clip(self.s.sum() + extra.sum(), 0.0, len(self.s))
+                self.s = np.clip(v - np.arange(len(self.s)), 0.0, 1.0).astype(np.float32)
+            else:
+                self.s_in, self.s1 = self.s.copy(), np.clip(extra, 0.0, 1.0)  # [s2] the guesses the check head compares
+                self.s = np.clip(extra if self.mode == "self" else self.s + extra, 0.0, 1.0)
+            v = float(self.s.sum())
+            if int(v * 10) != self.shown:  # printed per 0.1 stage
+                if str(XLEROBOT) not in sys.path:
+                    sys.path.insert(0, str(XLEROBOT))
+                from stage_labels import STAGES
+
+                k = min(int(v), len(self.s) - 1)
+                bar = "#" * int(v / len(self.s) * 30)  # whole task, 30 chars
+                print(f"[mem]   {timestamp:5.1f}s  {STAGES[k]} {k + 1}/{len(self.s)}  {v / len(self.s):4.0%} |{bar:<30}|", flush=True)
+            self.shown = int(v * 10)
+        v = float(self.s.sum())  # stage index + progress within it
+        return min(int(v), len(self.s) - 1), v / len(self.s)
+
+
 def live_stage(policy):
     """stage_labels.LiveStage when the policy takes observation.environment_state (trained on a *-stagelabel dataset),
-    else None. Needs the wrist cameras 'left_wrist' / 'right_wrist' in the robot observation."""
+    ProgressMemory when that input is the policy's own progress (config.progress_mode), else None.
+    LiveStage needs the wrist cameras 'left_wrist' / 'right_wrist' in the robot observation."""
     if policy is None or OBS_ENV_STATE not in (getattr(policy.config, "input_features", None) or {}):
         return None
+    if getattr(policy.config, "progress_mode", None):
+        print(f"Progress memory on: {OBS_ENV_STATE} = the model's own stage progress ({policy.config.progress_mode}), starts at 0")
+        mem = ProgressMemory(policy)
+        if os.environ.get("PROGRESS_S2"):  # [s2] head | path of a separate estimator (v6-progcheck_mix*)
+            mem.attach_check(policy, os.environ["PROGRESS_S2"])
+        return mem
     if str(XLEROBOT) not in sys.path:
         sys.path.insert(0, str(XLEROBOT))
     from stage_labels import STAGES, LiveStage
@@ -817,7 +916,8 @@ def save_stage_log(root: Path, episode_index: int, log: list) -> None:
     """[eval] Append the per-frame stages of a saved episode to stages.csv (docs/workflows/dataset-viewer "阶段 / 进度"):
     rule = the live fine9 stage fed to the model (-1: no stage input), pred = the model's own stage guess (stage head,
     *-stagepred argmax, *-progpred progress -> stage; -1 on human frames or none), prob = its probability (stage head
-    softmax / stagepred output), progress = the *-progpred output 0..1 (empty when not given)."""
+    softmax / stagepred output), progress = the *-progpred output 0..1 (empty when not given). Progress feedback models
+    (ProgressMemory): rule -1, pred = stage of their own s, progress = sum(s) / 9."""
     if not any(r[1] >= 0 or r[2] >= 0 for r in log):  # a plain model: nothing to save
         return
     csv_path = Path(root) / "stages.csv"
@@ -963,6 +1063,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     leader.join()
 
             reset_both()
+            flush_stdin()
             input(
                 f"Place the object, then press Enter to start trial {dataset.num_episodes + 1} "
                 f"of {cfg.dataset.num_episodes}: "
@@ -1005,6 +1106,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 if not dataset.episode_buffer or dataset.episode_buffer["size"] == 0:
                     logging.warning("No frames recorded; this trial will not be saved or counted")
                     dataset.episode_buffer = dataset.create_episode_buffer()
+                    flush_stdin()
                     input("Place the object, then press Enter to retry this trial: ")
                     continue
 
@@ -1018,6 +1120,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                         log_say("Re-record episode", cfg.play_sounds)
                         events["rerecord_episode"] = False
                         dataset.clear_episode_buffer()
+                        flush_stdin()
                         input("Put the object back, then press Enter to re-run the episode: ")
                         events["exit_early"] = False
                         continue

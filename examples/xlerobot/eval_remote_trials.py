@@ -32,7 +32,7 @@ from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 from lerobot.policies.utils import make_robot_action
 from lerobot.robots.xlerobot.xlerobot_client import XLerobotClient, XLerobotClientConfig
-from lerobot.scripts.lerobot_record_eval import live_stage
+from lerobot.scripts.lerobot_record_eval import ProgressMemory, live_stage
 from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_ENV_STATE, OBS_STR
 from lerobot.utils.control_utils import ask_success, init_keyboard_listener, predict_action
 from lerobot.utils.robot_utils import precise_sleep
@@ -84,6 +84,8 @@ def run_episode(robot, policy, preprocessor, postprocessor, features, device, ev
             frame, policy, device, preprocessor, postprocessor,
             policy.config.use_amp, task=args.task, robot_type=robot.robot_type,
         )
+        if isinstance(stage, ProgressMemory):  # progress feedback models update their own progress input
+            stage.update(policy, time.perf_counter() - t0)
         action = make_robot_action(out, features)
         if args.max_arm_step > 0:
             prev = action_sent if action_sent is not None else obs

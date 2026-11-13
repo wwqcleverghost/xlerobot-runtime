@@ -1265,6 +1265,18 @@ class LeRobotDataset(torch.utils.data.Dataset):
             f"Batch encoding {self.batch_encoding_size} videos for episodes {start_episode} to {end_episode - 1}"
         )
 
+        # [eval] the rows of these episodes may still sit in the metadata buffer, and meta.episodes is stale (None on a
+        # new dataset, the old count on resume): write them out and reload before reading them.
+        self.meta._close_writer()
+        self.meta.episodes = load_episodes(self.root)
+        latest_keys = [
+            f"videos/{k}/{f}" for k in self.meta.video_keys for f in ("chunk_index", "file_index", "to_timestamp")
+        ]
+        if start_episode > 0 and latest_keys[0] in self.meta.episodes.column_names:
+            # [eval] append to the video file of the last encoded episode (latest_episode has no video fields here)
+            prev = self.meta.episodes[start_episode - 1]
+            self.meta.latest_episode = {**self.meta.latest_episode, **{k: [prev[k]] for k in latest_keys}}
+
         chunk_idx = self.meta.episodes[start_episode]["data/chunk_index"]
         file_idx = self.meta.episodes[start_episode]["data/file_index"]
         episode_df_path = self.root / DEFAULT_EPISODES_PATH.format(chunk_index=chunk_idx, file_index=file_idx)
@@ -1279,7 +1291,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             ):
                 # The current episode is in a new chunk or file.
                 # Save previous episode dataframe and update the Hugging Face dataset by reloading it.
-                episode_df.to_parquet(episode_df_path)
+                episode_df.to_parquet(episode_df_path, index=False)  # [eval] combine_first leaves a non-default index; written it breaks load_episodes
                 self.meta.episodes = load_episodes(self.root)
 
                 # Load new episode dataframe
@@ -1295,12 +1307,16 @@ class LeRobotDataset(torch.utils.data.Dataset):
             for video_key in self.meta.video_keys:
                 video_ep_metadata.update(self._save_episode_video(video_key, ep_idx))
             video_ep_metadata.pop("episode_index")
-            video_ep_df = pd.DataFrame(video_ep_metadata, index=[ep_idx]).convert_dtypes(
+            # [eval] the next episode is appended after this one
+            self.meta.latest_episode = {**self.meta.latest_episode, **{k: [video_ep_metadata[k]] for k in latest_keys}}
+            # [eval] the row of this episode in this file (not ep_idx: a resumed file does not start at episode 0)
+            row = episode_df.index[episode_df["episode_index"] == ep_idx]
+            video_ep_df = pd.DataFrame(video_ep_metadata, index=row).convert_dtypes(
                 dtype_backend="pyarrow"
             )  # allows NaN values along with integers
 
             episode_df = episode_df.combine_first(video_ep_df)
-            episode_df.to_parquet(episode_df_path)
+            episode_df.to_parquet(episode_df_path, index=False)  # [eval] combine_first leaves a non-default index; written it breaks load_episodes
             self.meta.episodes = load_episodes(self.root)
 
     def _save_episode_data(self, episode_buffer: dict) -> dict:
@@ -1319,7 +1335,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # Convert buffer into HF Dataset
         ep_dict = {key: episode_buffer[key] for key in self.hf_features}
         ep_dataset = datasets.Dataset.from_dict(ep_dict, features=self.hf_features, split="train")
-        ep_dataset = embed_images(ep_dataset)
+        if self.meta.image_keys:  # [eval] video-only datasets have nothing to embed; the Map pass was a no-op that stalled each save
+            ep_dataset = embed_images(ep_dataset)
         ep_num_frames = len(ep_dataset)
 
         if self.latest_episode is None:
@@ -1419,7 +1436,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         ):
             # Initialize indices for a new dataset made of the first episode data
             chunk_idx, file_idx = 0, 0
-            if self.meta.episodes is not None and len(self.meta.episodes) > 0:
+            if episode_index > 0 and self.meta.episodes is not None and len(self.meta.episodes) > 0:
                 # It means we are resuming recording, so we need to load the latest episode
                 # Update the indices to avoid overwriting the latest episode
                 old_chunk_idx = self.meta.episodes[-1][f"videos/{video_key}/chunk_index"]

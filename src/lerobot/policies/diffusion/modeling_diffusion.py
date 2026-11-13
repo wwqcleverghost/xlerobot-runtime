@@ -375,6 +375,10 @@ class DiffusionModel(nn.Module):
         # Extract `n_action_steps` steps worth of actions (from the current observation).
         start = n_obs_steps - 1
         end = start + self.config.n_action_steps
+        if self.config.progress_mode:
+            # [eval] the progress dims of the step after the executed ones = the time of the next plan's observation
+            # (the last executed step is one frame earlier); lerobot_record_eval.ProgressMemory feeds it back
+            self.progress_next = actions[:, end, -self.config.env_state_feature.shape[0]:]
         actions = actions[:, start:end]
 
         return actions

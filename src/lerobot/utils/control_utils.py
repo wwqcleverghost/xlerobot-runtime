@@ -37,9 +37,22 @@ from lerobot.processor import PolicyAction, PolicyProcessorPipeline
 from lerobot.robots import Robot
 
 
+def flush_stdin() -> None:
+    """Drop keys typed before a prompt (stray Enter, y / n, arrow keys), so they cannot answer it.
+    2026-11-13: 8 of 20 trial labels were wrong and re-run prompts were skipped because of keys left in the terminal."""
+    try:
+        import sys
+        import termios
+
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:  # not a terminal (tests, pipes)
+        pass
+
+
 def ask_success() -> bool:
     """Ask for one trial result; blank Enter presses keep waiting without repeating the prompt."""
     prompt = "Put the object back, then: success? [y/n] (next episode starts right after): "
+    flush_stdin()
     while True:
         ans = input(prompt)
         # Arrow keys in a focused terminal can leave escape sequences in stdin.
