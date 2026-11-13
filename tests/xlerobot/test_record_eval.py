@@ -11,6 +11,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
+import torch
+
 from lerobot.scripts import lerobot_record_eval as evaluation
 
 
@@ -98,7 +100,8 @@ class EvaluationTests(unittest.TestCase):
                 (checkpoint / "train_config.json").write_text(json.dumps({"dataset": {"repo_id": "test/training"}}))
                 (root / "success.csv").write_text("episode,success,policy\n0,0,checkpoint\n1,1,checkpoint\n")
                 listener, events = self.make_listener()
-                dataset = SimpleNamespace(root=root, num_episodes=2, meta=SimpleNamespace(stats={}))
+                dataset = SimpleNamespace(root=root, num_episodes=2, meta=SimpleNamespace(stats={}),
+                                          features={evaluation.ACTION: {"names": ["a.pos"], "shape": (1,)}})
                 dataset.create_episode_buffer = lambda: {"size": 0, "episode_index": dataset.num_episodes}
                 dataset.start_image_writer = Mock()
                 dataset.finalize = Mock()
@@ -120,7 +123,8 @@ class EvaluationTests(unittest.TestCase):
                 robot.disconnect = lambda: setattr(robot, "is_connected", False)
                 cfg = SimpleNamespace(
                     robot=robot.config, teleop=None,
-                    policy=SimpleNamespace(pretrained_path=str(checkpoint), device="cpu"),
+                    policy=SimpleNamespace(pretrained_path=str(checkpoint), device="cpu",
+                                           output_features={evaluation.ACTION: SimpleNamespace(shape=(1,))}),
                     dataset=SimpleNamespace(
                         repo_id="test/eval", root=root, fps=30, video=True, rename_map={}, video_encoding_batch_size=1,
                         num_image_writer_processes=0, num_image_writer_threads_per_camera=4,
@@ -141,6 +145,8 @@ class EvaluationTests(unittest.TestCase):
                     "make_robot_from_config": lambda cfg: robot,
                     "make_default_processors": lambda: (None, None, None),
                     "create_initial_features": Mock(), "aggregate_pipeline_dataset_features": Mock(return_value={}),
+                    # record() compares the action size with the policy's output (one joint here, as the policy above)
+                    "combine_feature_dicts": Mock(return_value={evaluation.ACTION: {"names": ["a.pos"]}}),
                     "LeRobotDataset": Mock(return_value=dataset),
                     "sanity_check_dataset_robot_compatibility": Mock(),
                     "make_policy": Mock(return_value=object()), "make_pre_post_processors": Mock(return_value=(None, None)),
@@ -216,7 +222,7 @@ class EvaluationTests(unittest.TestCase):
 
         sent = []
         robot.send_action = lambda a: (sent.append(a[k]), send(a))[1]
-        dataset = SimpleNamespace(fps=30, features={}, episode_buffer={"size": 0})
+        dataset = SimpleNamespace(fps=30, features={evaluation.ACTION: {"names": [k, g]}}, episode_buffer={"size": 0})
         dataset.add_frame = lambda _: dataset.episode_buffer.update(size=dataset.episode_buffer["size"] + 1)
         listener, events = self.make_listener()
         events["recording_active"] = True
@@ -231,7 +237,8 @@ class EvaluationTests(unittest.TestCase):
 
         def policy_step(**_):
             # Before the takeover the policy holds still; after the hand-back it wants to be 50 units away at once.
-            return {k: robot.pos + (50.0 if tick() > 9 else 0.0), g: robot.grip}
+            # A [1, action_dim] tensor in the order of dataset.features, as the real predict_action returns.
+            return torch.tensor([[robot.pos + (50.0 if tick() > 9 else 0.0), robot.grip]])
 
         def leader_step():
             tick()  # the operator moves the leader 5 units further every frame
@@ -241,13 +248,15 @@ class EvaluationTests(unittest.TestCase):
         teleop.get_action = leader_step
 
         with patch.object(evaluation, "predict_action", side_effect=policy_step), patch.object(
-            evaluation, "make_robot_action", side_effect=lambda a, _: a
-        ), patch.object(evaluation, "build_dataset_frame", return_value={}), patch.object(
+            evaluation, "build_dataset_frame", return_value={}
+        ), patch.object(
             evaluation, "precise_sleep"
         ), patch.object(evaluation.time, "sleep"):
             spans = evaluation.record_loop(
                 robot=robot, events=events, fps=30, dataset=dataset, teleop=teleop,
-                policy=Mock(config=SimpleNamespace(device="cpu", use_amp=False)), preprocessor=Mock(steps=[]), postprocessor=Mock(), control_time_s=60,
+                # not a Mock: record_loop reads optional attributes of the policy (diffusion.stage_head_pred), which a Mock invents
+                policy=SimpleNamespace(config=SimpleNamespace(device="cpu", use_amp=False), reset=Mock()),
+                preprocessor=Mock(steps=[]), postprocessor=Mock(), control_time_s=60,
                 teleop_action_processor=lambda x: x[0], robot_action_processor=lambda x: x[0],
                 robot_observation_processor=lambda o: o, max_arm_step=3.0, takeover=True, leader_rest={k: -50.0},
             )
