@@ -15,10 +15,76 @@ const LS = {get(k, d) { try { return JSON.parse(localStorage.getItem('dv_' + k))
 async function api(path, body) {
   const r = await fetch(path, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
   const j = await r.json().catch(() => ({error: r.statusText}));
-  if (!r.ok) throw new Error(j.error || r.status);
+  if (!r.ok) throw Object.assign(new Error(j.error || r.status), {detail: j.detail});
   return j;
 }
 const status = (t, err) => { const s = $('#status'); s.textContent = t; s.className = err ? 'err' : ''; };
+
+// ---------- page format (README "页面格式") ----------
+// Every page uses the same slots and nothing else: the toolbar holds controls and legends only; explanations live in HELP
+// (the 说明 button); a panel is a title + facts + its content; a column's meaning is its header tooltip; three fixed states;
+// warnings go to status(). No free sentences on the page.
+const facts = list => `<span class="facts">${list.filter(Boolean).map(([k, v, cls]) => `<span class="fact ${cls || ''}">${esc(k)}${v == null ? '' : ` <b>${v}</b>`}</span>`).join('')}</span>`;
+const STATE = {loading: '加载中…', none: '未选择数据集', empty: '没有数据'};
+const state = kind => `<p class="mute">${STATE[kind]}</p>`;
+const errLine = e => `<p class="err" title="${esc(e.detail || '')}">${esc(e.message)}</p>`;
+const short = id => id.replace(/^eval-/, '');
+const SCORE_HELP = [
+  ['阶段', '全工具只有一套：9 个 fine9 阶段（A前往、A对位、A抓住、A抓着、AB对位、B抓住、B抓着、B放下、复位），颜色处处相同。'],
+  ['质量分', `0.4 平滑 + 0.3 速度 + 0.3 不停顿，对比人类基准 ${REF_NAME} 的中位数。任务结束 = 复位开始；速度只算成功且走到复位的；保留范围里没有复位的不计速度。`],
+];
+const HELP = {
+  review: [
+    ['审阅 / 裁剪', '默认只看和打标签。只有原始录制能裁剪（T）；一份 spec = 要生成的一个数据集；已构建的 spec 只读，要改先"另存为"。'],
+    ['时间轴', '按住拖动预览，松手接着播。裁剪模式：[ ] 设起点 / 终点；点剪切段或橙色把手后按 Delete 删除；细框 = 规则算出的保留范围。'],
+    ['关节曲线', '实线 = 从臂 observation.state，虚线 = 主臂指令 action。红线 = 突变，黄色 = 停顿超过 1 秒。'],
+    ['结尾容差', '尾部从每个关节都保持在最终姿态这么多以内的第一帧结束（v6 = 10）。'],
+    ...SCORE_HELP,
+  ],
+  batch: [
+    ['格子', '点格子标题看大图、关节曲线、打标签。空格 = 全部播放 / 暂停。'],
+    ...SCORE_HELP,
+  ],
+  quality: [
+    ['历史表', '每列是该数据集各条的中位数。点行加入 / 移出对比（最多 4 个数据集）。'],
+    ['筛选条件', '悬停条件看它量的是什么。条件和数字与命令行 curate.py 相同。jerk、峰值速度看从臂 observation.state，停顿看主臂指令 action。结果按条件顺序累计，一条可能同时不满足好几条。'],
+    ['逐条', '点图上的点或表格的行看视频。行尾按钮强制保留 / 去掉，存在 dataset_labels.json。'],
+    ['起止画面', '每条左边是保留范围第一帧，右边是最后一帧（头部相机）。1 = 开头立着，2 = 放进框里，3 = 没问题；标了前两个就去掉这条，"没问题"只记作看过；再按一次取消。'],
+    ...SCORE_HELP,
+  ],
+  models: [
+    ['来源', 'docs/models.csv，一行一个 HF 上的模型。用 python docs/workflows/sync/models.py 从 HF 重新生成；说明列手写。网页不改它。'],
+    ['评测', '成功数 / 试次数。总分和阶段漏斗来自这台机器上的 eval-<模型>。'],
+    ['灰色', '这台机器上没有这份数据。'],
+    ...SCORE_HELP,
+  ],
+  eval: [
+    ['总分', '0.5 × 完成度 + 0.5 × 质量。规则文档：docs/workflows/eval-scoring/README.zh.md。'],
+    ['阶段漏斗', '每行 通过 / 进入。进入 = 走到这个阶段；通过 = 进入了下一个阶段；复位通过 = 人工标成功。'],
+    ['完成度', '每个阶段的通过率 (通过 + 1) / (进入 + 2)，≤ 0.5 记 0，9 个取平均。'],
+    ['人工判断优先', '标成功 = 9 个阶段全过。标失败且备注写"<阶段>失败"（如 AB对位失败）= 停在该阶段。标失败没写备注 = 规则看到的最远阶段；规则会把夹爪空抓读成后面的阶段，可能多算。'],
+    ['区间', '完成度、质量、总分：按试次自助抽样 2000 次的 95% 区间。阶段和成功率：Wilson 95%。'],
+    ['历史表', '新版本在上，同版本按总分排。点行加入 / 移出下面的详情。'],
+    ...SCORE_HELP,
+  ],
+  stage: [
+    ['每行', '一个试次。上面的色带 = 规则阶段（评测时的实时输入 stages.csv，没有就离线重算 fine9），下面的色带 = 模型自己判断的阶段。'],
+    ['曲线', '黑线 = 规则进度，蓝线 = 模型进度。'],
+    ['标记', '▼ 倒退，▲ 跳阶段或进度跳变。实心 = 模型，空心 = 规则。'],
+    ['结束', '任务结束点来自 episode_end.csv（eval-scoring/mark_end.py），之后变灰，不截断数据。'],
+    ['模型阶段来源', '评测时模型的输出，或同一个阶段模型离线重放所有评测（stages_offline.csv）。'],
+    ...SCORE_HELP,
+  ],
+};
+const KEYS = ['快捷键', 'A / D 上一条 / 下一条 · 空格 播放 / 暂停 · < > 调播放速度 · Esc 关闭大图'];
+function toggleHelp() {
+  const old = $('.helppop');
+  if (old) return old.remove();
+  const rows = [...(HELP[route().page] || HELP.review), KEYS];
+  const pop = el(`<div class="pop helppop"><dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl></div>`);
+  pop.onclick = ev => ev.stopPropagation();
+  $('.top').append(pop);
+}
 const qs = o => Object.entries(o).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
 const frameUrl = (id, cam, ep, f) => `/api/frame?${qs({id, cam, ep, f: Math.max(0, Math.round(f))})}`;
 
@@ -49,7 +115,7 @@ function dsLabel(d) {
 }
 function showInfo(ids, extra = '') {
   const g = G.git ? `代码 git ${G.git.commit.slice(0, 8)}${G.git.dirty ? '（有未提交修改）' : ''}` : '';
-  $('#info').textContent = (extra || (ids.length === 1 ? dsLabel(G.by[ids[0]]) : '')) + (g ? ' · ' + g : '');
+  $('#info').textContent = [extra || (ids.length === 1 ? dsLabel(G.by[ids[0]]) : ''), g].filter(Boolean).join(' · ');
 }
 // mode 'single' | 'multi' | null; filter(d) limits the list; onchange(ids)
 // onchange(ids, true): the change came from the picker itself, so the caller must not rebuild it (that would close the list)
@@ -360,7 +426,7 @@ function openModal(list, k, start) {
     p && p.destroy(); cv && cv.destroy();
     const e = list[k];
     dlg.innerHTML = `<header style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap"><b>${esc(e.id)} ep${e.ep}</b><span>${e.title || ''}</span>
-      <span class="mute">${k + 1}/${list.length} · A/D 上下条 · 空格播放 · Esc 关闭</span><button style="margin-left:auto" class="x">关闭</button></header>
+      <span class="mute">${k + 1}/${list.length}</span><button style="margin-left:auto" class="x">关闭</button></header>
       <div class="pl"></div><div class="cv"></div><div class="labeler"></div>`;
     p = new Player($('.pl', dlg), {...e, start: start ?? e.start ?? 0});
     cv = new Curves($('.cv', dlg), {id: e.id, ep: e.ep, n: e.n, arm: e.arm, marks: e.marks || (e.fail != null ? {fail: e.fail} : {}),
@@ -388,6 +454,7 @@ function openModal(list, k, start) {
 // it builds, timeline editor, rule parameters, rebuild. A spec whose dataset is built is read-only (save as a new name).
 // =====================================================================================================
 async function pageReview(q, view, tools) {
+  const navId = G.nav;  // the page visit this run belongs to: a slower load must not write into a later page
   picker(null);
   const specs = await api('/api/specs');
   const ROLE = {raw: '原始录制', built: '生成的数据集', eval: '评测'};
@@ -419,8 +486,9 @@ async function pageReview(q, view, tools) {
     ${trim && spec ? `<button id="exp">导出</button>${ro ? '' : '<button id="rebuild" class="on">构建数据集…</button>'}` : ''}
     <span class="legend"><span><i style="background:var(--cut)"></i>剪掉</span><span><i style="background:var(--kept)"></i>保留</span><span><i style="background:var(--snap)"></i>突变</span>
       <span><i style="background:var(--pause)"></i>停顿&gt;1秒</span><span><i style="border:1px solid var(--ink)"></i>规则范围</span>
-      <span>A/D 上下条 · 空格播放 · 在时间轴上按住拖动预览、松手接着播${ro ? '' : ' · [ ] 设起点/终点 · 点剪切段或橙色把手后按 Delete 删除'} · &lt; &gt; 调速度</span></span>
-    ${trim && !spec ? '<span class="err">这个录制还没有 spec：点"新建…"，填要生成的数据集名</span>' : ''}${trim && spec && ro ? `<span class="err">${esc(spec)} 已构建（${esc(specInfo.built)}），只读；要改请"另存为…"</span>` : ''}`;
+      </span>`;
+  if (trim && !spec) status('这个录制还没有 spec：点"新建…"', 1);
+  else if (trim && spec && ro) status(`${spec} 已构建，只读`);
   $('#foldall').replaceWith(foldAllButton());
   $('#ds').onchange = () => { location.hash = '#review?' + new URLSearchParams({ds: $('#ds').value}); };
   $('#trim').onclick = () => { location.hash = '#review?' + new URLSearchParams({ds: dsId, ...(trim ? {} : {mode: 'trim'})}); };
@@ -479,10 +547,10 @@ async function pageReview(q, view, tools) {
 
   async function render() {
     io.disconnect(); vis.disconnect(); D.forEach(d => { d.p && d.p.destroy(); d.cv && d.cv.destroy(); });
-    view.innerHTML = '<p class="mute">加载中…</p>';
-    status('读取 ' + (spec || dsId));
+    view.innerHTML = state('loading');
     let R;
-    try { R = await api('/api/review?' + ruleQ()); } catch (e) { view.innerHTML = `<p class="err">${esc(e.message)}</p>`; status(''); return; }
+    try { R = await api('/api/review?' + ruleQ()); } catch (e) { if (navId === G.nav) view.innerHTML = errLine(e); return; }
+    if (navId !== G.nav) return;  // the user went to another page while this loaded
     D = R.episodes;
     if ($('#sort').value === 'q') D.sort((x, y) => (y.q[0] ?? -1) - (x.q[0] ?? -1));
     D.forEach((d, i) => { d.i = i; d.w = eff(d); });
@@ -498,6 +566,7 @@ async function pageReview(q, view, tools) {
   async function refresh() {  // rule parameters changed: new proposals, same cards
     status('按新规则计算…');
     const R = await api('/api/review?' + ruleQ()).catch(e => status(e.message, 1));
+    if (navId !== G.nav) return;
     if (!R) return;
     const key = r => `${r.ds}|${r.ep}|${r.seg}`, byKey = Object.fromEntries(R.episodes.map(r => [key(r), r]));
     D.forEach(d => { Object.assign(d, byKey[key(d)], {i: d.i}); d.w = eff(d); draw(d); });
@@ -510,7 +579,7 @@ async function pageReview(q, view, tools) {
     const c = el(`<section class="card" data-i="${d.i}">
       <header><b>#${d.i}</b> ${esc(d.ds)} ep${d.ep}${d.seg != null ? ` 第 ${d.seg + 1} 段` : ''}<span title="平顺 ${f2(d.q[1])} · 用时 ${f2(d.q[2])} · 停顿 ${f2(d.q[3])}">质量 ${f2(d.q[0])}</span><span>原始 ${sec(d.n)} 秒</span><span class="sel"></span><span class="edited"></span><span class="chips"></span></header>
       <div class="bar"><div class="ph"></div></div><div class="cvbox"></div>
-      <p class="meta">突变（红线）：${sn}。停顿 &gt; 1 秒（黄色）：${pa}。${trim ? '细框 = 规则算出的保留范围。' : ''}曲线：实线 = 从臂 observation.state，虚线 = 主臂指令 action</p>
+      <p class="meta">${facts([['突变', sn], ['停顿 > 1 秒', pa]])}</p>
       <div class="row"><div class="pl"></div><div class="strip"></div></div>
       <footer>${ro ? '' : `<button class="drop">${d.seg != null ? '这段不要' : '整条不要'}</button>${d.seg != null ? '' : '<button class="addcut">加剪切段</button>'}<button class="reset" title="回到 spec 的原始版本 + 当前规则">恢复初始</button>`}<span class="lab labeler"></span></footer></section>`);
     d.c = c;
@@ -717,9 +786,9 @@ async function pageBatch(q, view, tools) {
     <label>来源 <select id="fsrc"></select></label><label>标签 <select id="ftag"></select></label>
     <label>结果 <select id="fres"><option value="">全部</option><option value="1">成功</option><option value="0">失败</option></select></label>
     <label title="每条的质量分（report.py quality，基准 ${REF_NAME} 中位数）">质量分 <input id="qmin" type="number" step="0.05" min="0" max="1" style="width:58px" placeholder="≥"> – <input id="qmax" type="number" step="0.05" min="0" max="1" style="width:58px" placeholder="≤"></label>
-    <span id="count" class="mute"></span><span class="mute">空格 全部播放/暂停 · 点格子标题看大图、曲线、打标签</span>`;
+    <span id="count" class="mute"></span>`;
   if (pick) {
-    tools.prepend(el(`<span class="pickbar">来自筛选：预设 ${esc(pick.preset)}，${esc(pick.what)}共 ${pick.eps.length} 条 <button id="back">返回训练集质量</button></span>`));
+    tools.prepend(el(`<span class="pickbar">${facts([['来自筛选'], ['预设', esc(pick.preset)], [pick.what, pick.eps.length + ' 条']])} <button id="back">返回训练集质量</button></span>`));
     $('#back').onclick = () => { location.hash = '#quality'; };
   }
   view.style.setProperty('--cw', cw + 'px');
@@ -727,7 +796,7 @@ async function pageBatch(q, view, tools) {
   let E = [], cells = [], page = 0;
   const clock = {playing: false, t: 0, t0: 0, rate: G.rate}, scores = {};
   async function load() {
-    view.innerHTML = ids.length ? '<p class="mute">加载中…</p>' : '<p class="mute">在上面选择一个或多个数据集。</p>';
+    view.innerHTML = state(ids.length ? 'loading' : 'none');
     const res = await Promise.all(ids.map(id => api('/api/episodes?id=' + encodeURIComponent(id)).catch(e => ({id, error: e.message, episodes: []}))));
     E = res.flatMap(r => r.episodes.map(e => ({...e, id: r.id})));
     if (pick) {
@@ -848,6 +917,7 @@ const ciBar = (v, w = 140) => !v || v[0] == null ? '–' :
   `<b>${fx(v[0])}</b> <span class="mute">[${fx(v[1])}–${fx(v[2])}]</span>`;
 const tip = (ev, text) => { const t = $('#tip'); t.hidden = !text; if (text) { t.textContent = text; t.style.left = (ev.clientX + 12) + 'px'; t.style.top = (ev.clientY + 12) + 'px'; } };
 // sortable table: cols = [[key, title, fmt(row) -> html, sortValue(row)]], onrow(row, rowsInShownOrder, index)
+// cols: [key, header, cell(row), sort value(row)?, header tooltip?]; onrow(row, shown rows, index, event) or null
 function table(box, rows, cols, onrow, sortKey) {
   let key = sortKey || null, dir = 1;
   const draw = () => {
@@ -855,10 +925,10 @@ function table(box, rows, cols, onrow, sortKey) {
       const x = (col[3] || (z => z[key]))(a), y = (col[3] || (z => z[key]))(b);
       return x == null ? 1 : y == null ? -1 : (x > y ? 1 : x < y ? -1 : 0) * dir;
     }) : rows;
-    box.innerHTML = `<table><thead><tr>${cols.map(c => `<th data-k="${c[0]}">${c[1]}${c[0] === key ? (dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr></thead>
-      <tbody>${r.map((x, i) => `<tr class="click${x._sel ? ' selrow' : ''}" data-i="${i}">${cols.map(c => `<td>${c[2](x)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    box.innerHTML = `<table><thead><tr>${cols.map(c => `<th data-k="${c[0]}" title="${esc(c[4] || '')}">${c[1]}${c[0] === key ? (dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr></thead>
+      <tbody>${r.map((x, i) => `<tr class="${onrow ? 'click' : ''}${x._sel ? ' selrow' : ''}" data-i="${i}">${cols.map(c => `<td>${c[2](x)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
     $$('th', box).forEach(th => th.onclick = () => { dir = key === th.dataset.k ? -dir : 1; key = th.dataset.k; draw(); });
-    $$('tbody tr', box).forEach(tr => tr.onclick = ev => onrow(r[+tr.dataset.i], r, +tr.dataset.i, ev));
+    if (onrow) $$('tbody tr', box).forEach(tr => tr.onclick = ev => onrow(r[+tr.dataset.i], r, +tr.dataset.i, ev));
   };
   draw();
 }
@@ -911,10 +981,8 @@ async function pageQuality(q, view, tools) {
     <span id="count" class="mute"></span>
     <span class="segs" id="show">${[['all', '全部'], ['kept', '只看保留的'], ['gone', '只看去掉的']].map(([k, t]) => `<button data-s="${k}" class="${show === k ? 'on' : ''}">${t}</button>`).join('')}</span>
     <span class="segs" id="mode">${[['list', '表格'], ['frames', '起止画面']].map(([k, t]) => `<button data-m="${k}" class="${mode === k ? 'on' : ''}">${t}</button>`).join('')}</span>
-    <button id="bkept">批量播放保留的</button><button id="bgone">批量播放去掉的</button>
-    <span class="mute">筛选条件和数字与命令行 curate.py 相同；jerk、峰值速度看从臂 observation.state，停顿看主臂指令 action，质量分对比 ${REF_NAME} 中位数；
-    点历史表的行加入 / 移出数据集（最多 ${SLOTS} 个），点图上的点或表格的行看视频，行尾按钮强制保留 / 去掉（存在 dataset_labels.json）</span>`;
-  view.innerHTML = `<div class="panel" id="hist"><h3>历史：所有训练 / 示范数据集（每列为该数据集各条的中位数）</h3><div class="tb"></div></div>
+    <button id="bkept">批量播放保留的</button><button id="bgone">批量播放去掉的</button>`;
+  view.innerHTML = `<div class="panel" id="hist"><h3>所有训练 / 示范数据集</h3><div class="tb"></div></div>
     <div class="panel" id="rules"><h3>筛选条件</h3><div class="tb"></div></div>
     <div class="panel" id="sum"><h3>结果</h3><div class="body"></div>
       <p><input id="sname" placeholder="spec 名，例如 v7-handover-curated" size="30"> <button id="mkspec">按筛选结果生成 spec</button>
@@ -922,9 +990,7 @@ async function pageQuality(q, view, tools) {
     <div class="panel" id="rank"><h3>排名分布</h3><div class="chips"></div><div class="legend lg"></div><div class="chart"></div></div>
     <div class="panel" id="eps"><h3>逐条 <label class="mute" style="font-weight:400"><input type="checkbox" id="fflag"> 只看有 IQR 标记的</label></h3><div class="tb"></div></div>
     <div class="panel" id="frames" hidden><h3>起止画面审阅 <span class="prog mute"></span></h3>
-      <p class="mute">每条左边是保留范围第一帧、右边是最后一帧（头部相机）。按键：A / D 或方向键换条，1 = 开头立着，2 = 放进框里，3 = 没问题（标完跳到下一条，再按一次取消）。
-      标了前两个就去掉这条；"没问题"只记作看过。<label><input type="checkbox" id="unseen">只看还没看过的</label>
-      <label><input type="checkbox" id="hinted">只看有疑似提示的</label></p><div class="fgrid"></div><div class="pager"></div></div>`;
+      <p><label><input type="checkbox" id="unseen">只看还没看过的</label> <label><input type="checkbox" id="hinted">只看有疑似提示的</label></p><div class="fgrid"></div><div class="pager"></div></div>`;
   const ruleTable = () => {
     const box = $('#rules .tb'), gone = k => R ? R.rows.filter(r => k in r.reasons).length : '';
     box.innerHTML = `<table class="rt"><tr><th>开</th><th>条件</th><th>阈值</th><th>不满足</th></tr>${P.rules.map(r => {
@@ -933,7 +999,7 @@ async function pageQuality(q, view, tools) {
         ? `基准 <select data-k="${r.key}" data-p="ref">${G.ds.filter(d => !d.eval).map(d => `<option ${d.id === c.ref ? 'selected' : ''}>${esc(d.id)}</option>`).join('')}</select>`
         : `<span class="pk">${k}</span><input type="number" step="any" style="width:70px" data-k="${r.key}" data-p="${k}" value="${c[k]}">`).join(' ');
       return `<tr><td><input type="checkbox" data-k="${r.key}" data-p="on" ${c.on ? 'checked' : ''}></td>
-        <td>${esc(r.label)}${r.new ? ' <span class="chip bad">新指标，待确认</span>' : ''}<div class="mute help">${esc(r.help)}</div></td>
+        <td title="${esc(r.help)}">${esc(r.label)}${r.new ? ' <span class="chip bad">新指标，待确认</span>' : ''}</td>
         <td>${inputs}</td><td>${c.on && R ? gone(r.key) + ' 条' : c.on ? '–' : ''}</td></tr>`;
     }).join('')}</table>`;
     box.onchange = ev => {
@@ -948,7 +1014,7 @@ async function pageQuality(q, view, tools) {
     clearTimeout(tm);
     tm = setTimeout(async () => {
       const my = ++seq;
-      if (!ids.length) { $('#sum .body').innerHTML = '<p class="mute">在上面选择数据集。</p>'; return; }
+      if (!ids.length) { $('#sum .body').innerHTML = state('none'); return; }
       status('计算中…（第一次算一个数据集要解码首尾画面，约十几秒）');
       try { R = await api('/api/curate/run', {ids, preset: cur}); } catch (e) { status(e.message, 1); return; }
       if (my !== seq) return;
@@ -958,9 +1024,9 @@ async function pageQuality(q, view, tools) {
   function hist() {
     if (!H) return;
     const rows = H.rows.map(r => ({...r, _sel: ids.includes(r.id)})).sort((a, b) => b.version - a.version || a.id.localeCompare(b.id));
-    $('#hist h3').innerHTML = `历史：所有训练 / 示范数据集（每列为该数据集各条的中位数）${H.pending.length ? ` <span class="mute">· 后台计算中，还剩 ${H.pending.length} 个…</span>` : ''}`;
+    $('#hist h3').innerHTML = '所有训练 / 示范数据集' + facts([[rows.length + ' 个'], H.pending.length && ['后台计算中', H.pending.length]]);
     table($('#hist .tb'), rows, [
-      ['id', '数据集', r => `${r._sel ? `<i class="sw" style="background:${sv(colorSlots(ids)[r.id])}"></i>` : ''}<span class="nm" title="${esc(r.id)}">${esc(r.id)}</span>${r.error ? ` <span class="err" title="${esc(r.error)}">读取失败</span>` : ''}`],
+      ['id', '数据集', r => `${r._sel ? `<i class="sw" style="background:${sv(colorSlots(ids)[r.id])}"></i>` : ''}<span class="nm" title="${esc(r.id)}">${esc(r.id)}</span>${r.error ? ` <span class="err" title="${esc(r.error)}">无法计分</span>` : ''}`],
       ['n', '条数', r => r.n ?? '–'],
       ['quality', '质量分 [95% CI]', r => ciBar(r.quality, 100), r => r.quality && r.quality[0]],
       ...QM.slice(0, 7).map(([k, t, f]) => [k, t, r => r[k] == null ? '–' : f(r[k])]),
@@ -970,7 +1036,7 @@ async function pageQuality(q, view, tools) {
   historyRows('quality', h => { H = h; hist(); });
   historyRows('quality', h => { H = h; hist(); });
   async function detail() {
-    $('#rank .chart').innerHTML = ids.length ? '<p class="mute">加载中…</p>' : '<p class="mute">在历史表里点选数据集。</p>';
+    $('#rank .chart').innerHTML = state(ids.length ? 'loading' : 'none');
     await Promise.all(ids.filter(i => !data[i]).map(async i => {
       try { const [r, info] = await Promise.all([api('/api/quality?id=' + encodeURIComponent(i)), episodeInfo(i)]); data[i] = r.rows.map(x => ({...info[x.ep], ...x, id: i})); }
       catch (e) { status(`${i}: ${e.message}`, 1); data[i] = []; }
@@ -983,7 +1049,7 @@ async function pageQuality(q, view, tools) {
     const slots = colorSlots(ids), m = QM.find(x => x[0] === metric), box = $('#rank .chart');
     $('#rank .lg').innerHTML = ids.map(i => `<span><i style="background:${sv(slots[i])}"></i>${esc(i)}</span>`).join('');
     const series = ids.map(i => ({id: i, pts: (data[i] || []).filter(r => r[metric] != null).sort((a, b) => a[metric] - b[metric])})).filter(s => s.pts.length);
-    if (!series.length) { box.innerHTML = '<p class="mute">没有数据</p>'; return; }
+    if (!series.length) { box.innerHTML = state('empty'); return; }
     const W = Math.max(box.clientWidth, 480), Hh = 300, L = 64, R = 170, T = 12, B = 36;
     const all = series.flatMap(s => s.pts.map(p => p[metric]));
     let lo = metric === 'q' ? Math.max(0, Math.min(...all) - 0.05) : 0, hi = metric === 'q' ? 1 : Math.max(...all) * 1.05;
@@ -1014,12 +1080,12 @@ async function pageQuality(q, view, tools) {
   function summary() {
     const kept = R.rows.filter(r => r.kept).length;
     $('#count').textContent = `保留 ${kept} / ${R.rows.length} 条`;
-    $('#sum .body').innerHTML = `<p class="mute">基准：小幅来回 ${fx(R.refs.rev, 3)} 次/秒（${esc(cur.rev.ref)} 中位数），从臂 jerk ${fx(R.refs.jerk, 0)}（${esc(cur.jerk.ref)} 中位数）</p>` +
+    $('#sum .body').innerHTML = `<p>${facts([['小幅来回基准 ' + cur.rev.ref, fx(R.refs.rev, 3) + ' 次/秒'], ['jerk 基准 ' + cur.jerk.ref, fx(R.refs.jerk, 0)]])}</p>` +
       Object.entries(R.steps).map(([ds, st]) => {
         const rows = R.rows.filter(r => r.ds === ds), forced = rows.filter(r => r.force).length;
         return `<p><b>${esc(ds)}</b>：${st.map(x => `${labelOf(x.key)} <b>${x.left}</b>`).join(' → ')}　最终保留 <b>${rows.filter(r => r.kept).length}</b> / ${rows.length}${forced ? `（含手动强制 ${forced} 条）` : ''}</p>`;
-      }).join('') + `<p>合计保留 <b>${kept}</b> / ${R.rows.length} 条（按顺序累计；去掉的条可能同时不满足好几条）</p>` +
-      `<p class="mute">人工起止画面审阅：已看 ${R.rows.filter(r => r.manual).length} / ${R.rows.length}，开头立着 ${R.rows.filter(r => r.manual === 'standing').length} 条，放进框里 ${R.rows.filter(r => r.manual === 'basket').length} 条</p>`;
+      }).join('') + `<p>${facts([['合计保留', `${kept}/${R.rows.length}`], ['起止画面已看', `${R.rows.filter(r => r.manual).length}/${R.rows.length}`],
+        ['开头立着', R.rows.filter(r => r.manual === 'standing').length], ['放进框里', R.rows.filter(r => r.manual === 'basket').length]])}</p>`;
     $('#bkept').textContent = `批量播放保留的 ${kept} 条`;
     $('#bgone').textContent = `批量播放去掉的 ${R.rows.length - kept} 条`;
   }
@@ -1089,7 +1155,7 @@ async function pageQuality(q, view, tools) {
         return `<div class="fcard" data-k="${k}"><header><b>${esc(r.ds)} ep${r.ep}</b><span class="st"></span><span class="hint">${hints(r).map(esc).join(' · ')}</span></header>
           <div class="pair"><figure>${img(0)}<figcaption>开头（第 0 帧）</figcaption></figure><figure>${img(r.n - 1)}<figcaption>结尾（第 ${r.n - 1} 帧）</figcaption></figure></div>
           <footer>${MARKS.map(([v, t], i) => `<button data-v="${v}">${i + 1} ${t}</button>`).join('')}</footer></div>`;
-      }).join('') || '<p class="mute">没有符合条件的条</p>';
+      }).join('') || state('empty');
       const pages = Math.max(1, Math.ceil(flist.length / FPAGE));
       $('#frames .pager').innerHTML = `<button data-p="-1">上一页</button><span>${fpage + 1} / ${pages}（${flist.length} 条）</span><button data-p="1">下一页</button>`;
       $$('#frames .fcard').forEach(c => c.onclick = ev => {
@@ -1171,94 +1237,99 @@ async function pageQuality(q, view, tools) {
 }
 
 // =====================================================================================================
-// page 4: eval scores (docs/workflows/eval-scoring): completion, quality, total with 95% CI, stage funnel, per trial
+// page 4: eval scores (docs/workflows/eval-scoring): completion, quality, total with 95% CI, the 9-stage funnel, per trial
 // =====================================================================================================
-const STAGE_ZH = ['前往', '抓住', '交接前不掉', '交接成功', '放好'];
-// A failed trial whose note says "<stage>失败" (e.g. "AB对位失败") failed at that stage (user, 2026-11-13): the 9-stage funnels
-// count it as entered that stage and none after it, whatever the rule read later (a gripper closing on nothing reads as B抓住).
-const noteStage = (label, names) => { const n = label && label.note || ''; return names.reduce((b, nm, g) => n.includes(nm + '失败') && (b < 0 || nm.length > names[b].length) ? g : b, -1); };
-const segTop = segs => { const m = (segs || []).filter(q => q[2] >= 0).map(q => q[2]); return m.length ? Math.max(...m) : -1; };
-const failTop = (segs, success, label, names) => { const g = success ? -1 : noteStage(label, names); return g >= 0 ? g : segTop(segs); };
+// One set of stages on every page: the 9 fine9 stages, one colour each (--s1..--s9), the ones report.py scores with. Funnel
+// rows come from the server ({stage, k = passed, n = entered, ci}: /api/eval, /api/history), so every page shows the same numbers.
+const stageSw = (g, name) => `<i class="sw" style="background:${sv(g)}"></i>${esc(name)}`;
+const stageLegend = names => names.map((nm, g) => `<span title="阶段 ${g}"><i style="background:${sv(g)}"></i>${esc(nm)}</span>`).join('');
+const funnelTable = st => `<table class="fn">${st.map((s, g) => `<tr><td>${stageSw(g, s.stage)}</td><td>${s.k}/${s.n}</td>
+  <td>${s.n ? ciBar([s.k / s.n, s.ci[0], s.ci[1]], 160) : '<span class="mute">没走到</span>'}</td></tr>`).join('')}</table>`;
+const funnelMini = st => {  // one bar per stage: height = share of the trials that entered it
+  if (!st) return '–';
+  const BW = 13, BH = 26, N = st[0].n || 1;
+  return `<svg width="${st.length * BW}" height="${BH}" style="vertical-align:middle">${st.map((s, g) => `<g><title>${esc(s.stage)}：通过 ${s.k} / 进入 ${s.n}</title>
+    <rect x="${g * BW}" y="0" width="${BW - 2}" height="${BH}" fill="var(--soft)"/><rect x="${g * BW}" y="${BH - s.n / N * BH}" width="${BW - 2}" height="${s.n / N * BH}" fill="${sv(g)}"/></g>`).join('')}</svg>`;
+};
+// one trial: the stages before `top` passed, `top` entered and not passed (all passed on success), the rest not reached
+const stageSquares = (t, names) => names.map((nm, g) => {
+  const k = t.success || g < t.top ? 'p' : g === t.top ? 'f' : 'n';
+  return `<i class="sq ${k}" ${k === 'p' ? `style="background:${sv(g)}"` : ''} title="${esc(nm)}：${{p: '通过', f: '没通过', n: '没走到'}[k]}"></i>`;
+}).join('');
 async function pageEval(q, view, tools) {
   let ids = (q.ds ? q.ds.split(',') : LS.get('eval_ds', [])).filter(i => G.by[i] && G.by[i].eval);
   const setIds = (v, fromPicker) => { ids = v; LS.set('eval_ds', ids); setQuery({ds: ids.join(',')}); if (!fromPicker) picker('multi', ids, d => d.eval, setIds); hist(); detail(); };
   picker('multi', ids, d => d.eval, setIds);
-  tools.innerHTML = `<span class="mute">总分 = 0.5 × 完成度 + 0.5 × 质量。完成度 = 5 个阶段通过率 (通过+1)/(进入+2) 截断后平均（≤0.5 记 0）；
-    质量 = 0.4 平滑 + 0.3 速度 + 0.3 不停顿，对比人类基准 ${REF_NAME} 中位数。区间：完成度/质量/总分按试次自助抽样 2000 次，阶段和成功率用 Wilson。
-    规则见 docs/workflows/eval-scoring/README.zh.md。点历史表的行看详情。</span>`;
-  view.innerHTML = `<div class="panel" id="hist"><h3>历史：所有评测</h3><div class="tb"></div></div><div id="det"></div>`;
+  tools.innerHTML = '<span class="legend" id="sleg"></span>';
+  view.innerHTML = `<div class="panel" id="hist"><h3>所有评测</h3><div class="tb"></div></div><div id="det"></div>`;
   let H = null;
+  const CI = '区间 = 按试次自助抽样的 95%';
   function hist() {
     if (!H) return;
     const rows = H.rows.map(r => ({...r, _sel: ids.includes(r.id)})).sort((a, b) => b.version - a.version || (b.total ? b.total[0] : -1) - (a.total ? a.total[0] : -1));
-    $('#hist h3').innerHTML = `历史：所有评测（新版本在上，同版本按总分排）${H.pending.length ? ` <span class="mute">· 后台计算中，还剩 ${H.pending.length} 个…</span>` : ''}`;
+    $('#hist h3').innerHTML = '所有评测' + facts([[rows.length + ' 个'], H.pending.length && ['后台计算中', H.pending.length]]);
+    const st = (rows.find(r => r.stages) || {}).stages;
+    if (st) $('#sleg').innerHTML = stageLegend(st.map(s => s.stage));
     table($('#hist .tb'), rows, [
-      ['id', '评测数据集', r => `<span class="nm" title="${esc(r.id)}">${esc(r.id)}</span>` + (r.error ? ` <span class="err" title="${esc(r.error)}">读取失败</span>` : '')],
-      ['success', '成功', r => r.success || '–', r => r.success_rate && r.success_rate[0]],
-      ['success_rate', '成功率 [Wilson]', r => ciBar(r.success_rate, 100), r => r.success_rate && r.success_rate[0]],
-      ['completion', '完成度 [95% CI]', r => ciBar(r.completion, 100), r => r.completion && r.completion[0]],
-      ['quality', '质量 [95% CI]', r => ciBar(r.quality, 100), r => r.quality && r.quality[0]],
-      ['total', '总分 [95% CI]', r => ciBar(r.total, 100), r => r.total && r.total[0]],
-      ['stages', '阶段漏斗（通过/进入）', r => r.stages ? r.stages.map(s => `${s.k}/${s.n}`).join(' → ') : '–', r => r.stages && r.stages[4].k],
+      ['id', '评测', r => `<span class="nm" title="${esc(r.id)}">${esc(short(r.id))}</span>` + (r.error ? ` <span class="err" title="${esc(r.error)}">无法计分</span>` : '')],
+      ['success', '成功', r => r.success || '–', r => r.success_rate && r.success_rate[0], '人工标成功的试次 / 全部试次'],
+      ['success_rate', '成功率', r => ciBar(r.success_rate, 100), r => r.success_rate && r.success_rate[0], 'Wilson 95% 区间'],
+      ['completion', '完成度', r => ciBar(r.completion, 100), r => r.completion && r.completion[0], '9 个阶段通过率的平均。' + CI],
+      ['quality', '质量', r => ciBar(r.quality, 100), r => r.quality && r.quality[0], '0.4 平滑 + 0.3 速度 + 0.3 不停顿。' + CI],
+      ['total', '总分', r => ciBar(r.total, 100), r => r.total && r.total[0], '0.5 × 完成度 + 0.5 × 质量。' + CI],
+      ['stages', '阶段漏斗', r => funnelMini(r.stages), r => r.stages && r.stages[r.stages.length - 1].k, '每根柱 = 进入该阶段的试次占比，悬停看 通过 / 进入'],
     ], r => { if (r.error) return; setIds(ids.includes(r.id) ? ids.filter(x => x !== r.id) : [r.id, ...ids]); });
   }
-  historyRows('eval', h => { H = h; hist(); });
+  const reload = () => historyRows('eval', h => { H = h; hist(); });
+  reload();
+  let seq = 0, tm;
+  const rescore = () => { clearTimeout(tm); tm = setTimeout(() => { detail(); reload(); }, 800); };  // a note can name the failure stage
   async function detail() {
-    const det = $('#det');
-    det.innerHTML = ids.length ? '' : '<p class="mute">在历史表里点一个或多个评测，看阶段漏斗和逐试次结果。</p>';
+    const my = ++seq, det = $('#det');
+    det.innerHTML = ids.length ? '' : state('none');
     for (const id of ids) {
-      const box = el(`<div class="panel"><h3>${esc(id)}</h3><p class="mute">加载中…</p></div>`);
+      const box = el(`<div class="panel"><h3>${esc(short(id))}</h3>${state('loading')}</div>`);
       det.append(box);
       let r, info;
       try { [r, info] = await Promise.all([api('/api/eval?id=' + encodeURIComponent(id)), episodeInfo(id)]); }
-      catch (e) { box.innerHTML = `<h3>${esc(id)}</h3><p class="err">${esc(e.message)}</p>`; continue; }
-      box.innerHTML = `<h3>${esc(id)} <button class="x" style="float:right">移出</button></h3>
-        <p>成功 <b>${r.success}</b> ${ciBar(r.success_rate, 100)}　完成度 ${ciBar(r.completion, 100)}　质量 ${ciBar(r.quality, 100)}　<b>总分</b> ${ciBar(r.total, 100)}</p>
-        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start"><div><h4 style="margin:4px 0">阶段漏斗（9 阶段 fine9，进入下一阶段 / 进入该阶段，Wilson 95%）</h4><table class="fn fn9"><tr><td class="mute">加载中…</td></tr></table><p class="mute" style="margin:4px 0;max-width:340px">最后一行 = 成功 / 走到复位。失败试次的备注写了“某阶段失败”（如 AB对位失败）时按备注算，否则按规则走到的最远阶段。只是显示；完成度计分仍按原来的 5 个阶段。</p></div>
+      catch (e) { box.innerHTML = `<h3>${esc(short(id))}</h3>${errLine(e)}`; continue; }
+      if (my !== seq) return;
+      const names = r.stages.map(s => s.stage);
+      box.innerHTML = `<h3>${esc(short(id))} <button class="x" style="float:right">移出</button></h3>
+        <div class="stats"><span>成功 <b>${r.success}</b> ${ciBar(r.success_rate, 100)}</span><span>完成度 ${ciBar(r.completion, 100)}</span><span>质量 ${ciBar(r.quality, 100)}</span><span><b>总分</b> ${ciBar(r.total, 100)}</span></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start"><div><h4 style="margin:4px 0">阶段漏斗</h4>${funnelTable(r.stages)}</div>
         <div class="tr" style="min-width:0;flex:1"></div></div>`;
       $('.x', box).onclick = () => setIds(ids.filter(x => x !== id));
       const title = t => (t.success ? '<span class="chip ok">成功</span>' : `<span class="chip bad">失败</span> 失败时刻约 ${sec(t.fail)} 秒（红色虚线）`) + ` · 质量 ${fx(t.q)}`;
       const list = r.trials.map(t => ({...info[t.ep], ...t, id, start: t.fail != null ? Math.max(t.fail - 45, 0) : 0}));
       list.forEach(t => { t.title = title(t); });
-      const byEp = Object.fromEntries(list.map(t => [t.ep, t]));
-      let names9 = [], drawTable = () => {}, repaint = () => {};
-      api('/api/stageview?id=' + encodeURIComponent(id) + '&src=live').then(sv => {  // 9-stage funnel: stage reached = the noted failure stage, else the highest rule stage
-        const rs = sv.episodes.map(e => ({ep: e.ep, segs: e.live})), ok = new Set(sv.episodes.filter(e => e.success).map(e => e.ep)), tb = $('.fn9', box);
-        names9 = sv.names;
-        const top = x => failTop(x.segs, ok.has(x.ep), byEp[x.ep] && byEp[x.ep].label, names9);
-        // noted failure stage: the failure is before the first later return to an earlier stage (a retry at the very end is not it)
-        const refail = x => { const t = byEp[x.ep], g = !t || t.success ? -1 : noteStage(t.label, names9); if (t) t.top9 = segTop(x.segs); if (g < 0 || !x.segs) return;
-          const i = x.segs.findIndex(q => q[2] === g), j = i < 0 ? -1 : x.segs.findIndex((q, k) => k > i && q[2] >= 0 && q[2] < g);
-          if (j >= 0 && x.segs[j][0] - 15 < t.fail) { t.fail = Math.max(x.segs[j][0] - 15, 0); t.start = Math.max(t.fail - 45, 0); t.title = title(t); } };
-        const wil = (k, n) => { const z = 1.96, p = k / n, d = 1 + z * z / n, c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d; return [Math.max(c - h, 0), Math.min(c + h, 1)]; };
-        const paint = () => {
-          const ready = rs.filter(x => x.segs), N = sv.names.length;
-          const ent = g => ready.filter(x => top(x) >= g).length;  // entered stage g
-          tb.innerHTML = sv.names.map((nm, g) => { const n = ent(g), k = g < N - 1 ? ent(g + 1) : ready.filter(x => top(x) >= g && ok.has(x.ep)).length, w = n ? wil(k, n) : [0, 0];
-            return `<tr><td>${g} ${esc(nm)}</td><td>${k}/${n}</td><td>${n ? ciBar([k / n, w[0], w[1]], 160) : '没走到'}</td></tr>`; }).join('') +
-            (ready.length < rs.length ? `<tr><td colspan="3" class="mute">算阶段中 ${rs.length - ready.length} 条</td></tr>` : '');
-        };
-        repaint = paint;
-        rs.forEach(refail); paint(); drawTable();
-        let q = Promise.resolve();  // fine9 recompute decodes wrist videos: one episode at a time
-        rs.forEach(x => { if (!x.segs) q = q.then(() => getStages(id, x.ep, 'fine9').then(st => { x.segs = st.segs; refail(x); paint(); }).catch(() => {})); });
-        q.then(drawTable);
-      }).catch(e => { $('.fn9', box).innerHTML = `<tr><td class="err">${esc(e.message)}</td></tr>`; });
-      const dots = t => t.stages.map((v, i) => { const reached = t.stages.slice(0, i).every(Boolean); return `<i class="dot ${!reached ? 'n' : v ? 'p' : 'f'}" title="${STAGE_ZH[i]}：${!reached ? '没走到' : v ? '通过' : '失败'}"></i>`; }).join('');
-      const fail9 = t => { if (t.success) return ''; const g = noteStage(t.label, names9); return g >= 0 ? `<b>${esc(names9[g])}</b> <span class="mute">备注</span>` : t.top9 >= 0 ? `<span class="mute">${esc(names9[t.top9])}（规则）</span>` : ''; };
-      drawTable = () => table($('.tr', box), list, [
+      const fail9 = t => t.success ? '' : `${stageSw(t.top, names[t.top])} <span class="mute">${{note: '备注', rule: '规则'}[t.top_by] || ''}</span>`;
+      const drawTable = () => table($('.tr', box), list, [
         ['ep', '试次', t => `T${t.ep + 1}`],
         ['success', '人工标签', t => `<span class="chip ${t.success ? 'ok' : 'bad'}">${t.success ? '成功' : '失败'}</span>`],
         ['fail', '失败时刻', t => t.fail == null ? '' : `<button>▶ ${sec(t.fail)} 秒</button>`],
-        ['fail9', '失败阶段', fail9, t => t.success ? 99 : (g => g >= 0 ? g : t.top9 ?? -1)(noteStage(t.label, names9))],
-        ['stages', '阶段 前往→放好', dots, t => t.stages.reduce((a, b) => a + b, 0)],
+        ['top', '失败阶段', fail9, t => t.success ? 99 : t.top, '失败试次停在哪个阶段。来源：备注里写的"<阶段>失败"，否则规则看到的最远阶段'],
+        ['stages', '阶段', t => stageSquares(t, names), t => t.success ? 99 : t.top, '实色 = 通过，红框 = 进入但没通过，灰 = 没走到'],
         ['q_smooth', '平滑', t => fx(t.q_smooth)], ['q_speed', '速度', t => fx(t.q_speed)], ['q_idle', '不停顿', t => fx(t.q_idle)],
         ['q', '质量', t => `<b>${fx(t.q)}</b>`],
-        ['task_s', '用时', t => t.task_s == null ? '–' : fx(t.task_s, 1) + ' s'],
+        ['task_s', '用时', t => t.task_s == null ? '–' : fx(t.task_s, 1) + ' s', null, '开始动到复位开始；只有成功且走到复位的试次有'],
         ['rev_rate', '小幅来回', t => fx(t.rev_rate) + '/s'], ['idle_frac', '停顿占比', t => fx(100 * t.idle_frac, 0) + '%'],
         ['label', '标注', t => tagChips(t.label), t => (t.label && t.label.tags || []).join()],
-      ], (t, shown, k) => openModal(shown.map(x => ({...x, onlabel: l => { x.label = l; repaint(); drawTable(); }})), k, t.start));
+      ], (t, shown, k) => openModal(shown.map(x => ({...x, onlabel: l => {
+        const noted = (l.note || '') !== ((x.label || {}).note || '');
+        x.label = l;
+        if (noted) rescore(); else drawTable();
+      }})), k, t.start));
       drawTable();
+      // a noted failure stage: the failure moment is before the first later return to an earlier stage (a retry at the very end is not it)
+      api('/api/stageview?id=' + encodeURIComponent(id) + '&src=live').then(v => v.episodes.forEach(e => {
+        const t = list.find(x => x.ep === e.ep);
+        if (!t || t.top_by !== 'note') return;
+        (e.live ? Promise.resolve({segs: e.live}) : getStages(id, e.ep, 'fine9')).then(s => {
+          const i = s.segs.findIndex(x => x[2] === t.top), j = i < 0 ? -1 : s.segs.findIndex((x, k) => k > i && x[2] >= 0 && x[2] < t.top);
+          if (j >= 0 && s.segs[j][0] - 15 < t.fail) { t.fail = Math.max(s.segs[j][0] - 15, 0); t.start = Math.max(t.fail - 45, 0); t.title = title(t); drawTable(); }
+        }).catch(() => {});
+      })).catch(() => {});
     }
   }
   detail();
@@ -1286,8 +1357,8 @@ const JUMP = 0.1;  // ponytail: a progress step > 0.1 in one frame counts as a j
 const valueJumps = v => { const out = []; if (v) for (let f = 1; f < v.length; f++) if (v[f] != null && v[f - 1] != null && Math.abs(v[f] - v[f - 1]) > JUMP) out.push(f); return out; };
 
 async function pageStage(q, view, tools) {
-  let ids = (q.ds ? q.ds.split(',') : LS.get('stage_ds', [])).filter(i => G.by[i] && G.by[i].eval);
-  const setIds = (v, fromPicker) => { ids = v; LS.set('stage_ds', ids); setQuery({ds: ids.join(',')}); if (!fromPicker) picker('multi', ids, d => d.eval, setIds); draw(); };
+  let ids = (q.ds ? q.ds.split(',') : LS.get('eval_ds', [])).filter(i => G.by[i] && G.by[i].eval);  // the eval page's selection
+  const setIds = (v, fromPicker) => { ids = v; LS.set('eval_ds', ids); setQuery({ds: ids.join(',')}); if (!fromPicker) picker('multi', ids, d => d.eval, setIds); draw(); };
   picker('multi', ids, d => d.eval, setIds);
   let src = LS.get('stage_src', 'live');
   tools.innerHTML = `<select id="ssrc" title="模型阶段来源"><option value="live">评测时的模型输出（stages.csv）</option>
@@ -1300,33 +1371,35 @@ async function pageStage(q, view, tools) {
   G.cleanup.push(() => rows.forEach(r => r.ro.disconnect()));
   async function draw() {
     rows.splice(0).forEach(r => r.ro.disconnect());
-    view.innerHTML = ids.length ? '' : '<p class="mute">选一个或多个评测数据集。</p>';
+    view.innerHTML = ids.length ? '' : state('none');
     const data = [];
     for (const id of ids) {
-      const box = el(`<div class="panel"><h3>${esc(id)}</h3><p class="mute">加载中…</p></div>`);
+      const box = el(`<div class="panel"><h3>${esc(short(id))}</h3>${state('loading')}</div>`);
       view.append(box);
-      try { data.push([box, ...await Promise.all([api('/api/stageview?id=' + encodeURIComponent(id) + '&src=' + src), episodeInfo(id)])]); }
-      catch (e) { box.innerHTML = `<h3>${esc(id)}</h3><p class="err">${esc(e.message)}</p>`; }
+      try { data.push([box, ...await Promise.all([api('/api/stageview?id=' + encodeURIComponent(id) + '&src=' + src), episodeInfo(id),
+                                                  api('/api/eval?id=' + encodeURIComponent(id)).catch(() => null)])]); }
+      catch (e) { box.innerHTML = `<h3>${esc(short(id))}</h3>${errLine(e)}`; }
     }
     if (!data.length) return;
     const names = data[0][1].names, sumBox = el('<div class="panel"><h3>模型对比</h3><div class="tb"></div></div>');
     view.prepend(sumBox);
-    $('#sleg').innerHTML = names.map((nm, g) => `<span><i style="background:var(--s${g % 10 + 1})"></i>${g} ${esc(nm)}</span>`).join('');
+    $('#sleg').innerHTML = stageLegend(names);
     const N = Math.max(...data.flatMap(([, d]) => d.episodes.map(e => e.n)));  // one time axis for every row
     let queue = Promise.resolve();  // fine9 recompute decodes wrist videos: one episode at a time
     for (const [box, d, info] of data) {
       const back = (k) => d.episodes.reduce((s, e) => s + segMarks(e[k]).filter(m => m[1] === 'back').length, 0);
-      box.innerHTML = `<h3>${esc(d.id)} <span class="mute" style="font-weight:400">· ${d.episodes.length} 条
-        · 规则阶段：${d.has_log ? (src === 'offline' ? '离线 fine9，模型 = 离线重放（stages_offline.csv）' : '评测时实时输入（stages.csv）') : src === 'offline' ? '<span class="err">没有 stages_offline.csv</span>，离线重算 fine9' : '离线重算 fine9（这次评测没有 stages.csv）'}
-        · 结束：${d.has_end ? 'episode_end.csv' : d.has_log ? '按 stages.csv 现算' : '<span class="err">未标注，运行 eval-scoring/mark_end.py</span>'}
-        ${d.has_log ? `· 模型倒退共 <b style="color:var(--bad)">${back('pred')}</b> 次` : ''}</span></h3><div class="srows"></div>`;
+      box.innerHTML = `<h3>${esc(short(d.id))}${facts([[d.episodes.length + ' 条'],
+        ['规则阶段', d.has_log ? (src === 'offline' ? 'stages_offline.csv' : 'stages.csv') : '离线重算'],
+        src === 'offline' && !d.has_log && ['没有 stages_offline.csv', null, 'bad'],
+        ['结束', d.has_end ? 'episode_end.csv' : d.has_log ? '现算' : '未标注', !d.has_end && !d.has_log && 'bad'],
+        d.has_log && ['模型倒退', back('pred'), 'bad']])}</h3><div class="srows"></div>`;
       const list = d.episodes.map(e => ({...info[e.ep], ...e, id: d.id, marks: e.end == null ? {} : {keep: [0, e.end]},
         title: `<span class="chip ${e.success ? 'ok' : 'bad'}">${e.success ? '成功' : '失败'}</span> 结束 ${e.end == null ? '未标注' : sec(e.end) + ' 秒（' + e.how + '）'} · 录制 ${sec(e.n)} 秒`}));
       d.episodes.forEach((e, k) => {
         const r = el(`<div class="srow"><div class="slab"><b>T${e.ep + 1}</b> <span class="chip ${e.success ? 'ok' : 'bad'}">${e.success ? '✓' : '✗'}</span>
           <span title="结束（${e.how}${e.marked ? '' : '，未写入 episode_end.csv'}）/ 录制">${e.end == null ? '–' : (e.end / FPS).toFixed(1)} / ${(e.n / FPS).toFixed(1)} s</span><span class="cnt"></span></div><canvas></canvas></div>`);
         $('.srows', box).append(r);
-        const row = {id: d.id, e, label: (info[e.ep] || {}).label, cv: $('canvas', r), rule: e.live, ro: new ResizeObserver(() => paint(row))};
+        const row = {id: d.id, e, cv: $('canvas', r), rule: e.live, ro: new ResizeObserver(() => paint(row))};
         rows.push(row); row.ro.observe(r);
         if (!row.rule) queue = queue.then(() => getStages(d.id, e.ep, 'fine9').then(s => { row.rule = s.segs; paint(row); summary(); }).catch(err => { row.err = err.message; paint(row); }));
         const at = ev => { const b = row.cv.getBoundingClientRect(); return Math.round((ev.clientX - b.left) / b.width * N); };
@@ -1345,29 +1418,22 @@ async function pageStage(q, view, tools) {
     function summary() {  // one line per model: success, how far trials get, time, going back, model vs rule agreement
       const per = (rs, k) => rs.length ? rs.reduce((t, r) => t + segMarks(k(r)).filter(m => m[1] === 'back').length, 0) / rs.length : null;
       const at = (segs, n) => { const a = new Int8Array(n).fill(-1); for (const [x, y, g] of segs || []) a.fill(g, x, Math.min(y, n)); return a; };
-      const out = data.map(([box, d]) => {
+      const out = data.map(([box, d, , ev]) => {
         const rs = rows.filter(r => r.id === d.id), n = rs.length, ok = rs.filter(r => r.e.success).length, ready = rs.filter(r => r.rule);
-        const reach = names.map((_, g) => ready.filter(r => failTop(r.rule, r.e.success, r.label, names) >= g).length);  // noted failure stage first
         const t = rs.filter(r => r.e.success && r.e.end != null).map(r => r.e.end / FPS).sort((a, b) => a - b);
         const withPred = rs.filter(r => r.e.pred && r.rule);
         let same = 0, both = 0;
         withPred.forEach(r => { const end = r.e.end ?? r.e.n, a = at(r.rule, end), b = at(r.e.pred, end); for (let f = 0; f < end; f++) if (a[f] >= 0 && b[f] >= 0) { both++; same += a[f] === b[f]; } });
-        const BW = 13, BH = 26;
-        const funnel = `<svg width="${names.length * BW}" height="${BH}" style="vertical-align:middle">` + names.map((nm, g) => {
-          const h = ready.length ? reach[g] / ready.length * BH : 0;
-          return `<rect x="${g * BW}" y="0" width="${BW - 2}" height="${BH}" fill="var(--soft)"/><rect x="${g * BW}" y="${BH - h}" width="${BW - 2}" height="${h}" fill="var(--s${g % 10 + 1})"><title>${esc(nm)}：${reach[g]}/${ready.length} 条走到</title></rect>`;
-        }).join('') + '</svg>';
         const bar = (v, col) => `<svg width="60" height="8" style="vertical-align:middle"><rect width="60" height="8" rx="2" fill="var(--soft)"/><rect width="${60 * v}" height="8" rx="2" fill="${col}"/></svg>`;
-        return {box, id: d.id, n, ok, funnel, pending: n - ready.length,
+        return {box, id: d.id, n, ok, funnel: funnelMini(ev && ev.stages),
           time: t.length ? t[t.length >> 1] : null, mean: t.length ? t.reduce((a, b) => a + b, 0) / t.length : null, tmin: t[0], tmax: t[t.length - 1],
           rback: per(ready, r => r.rule), pback: withPred.length ? per(withPred, r => r.e.pred) : null,
           agree: both ? same / both : null, bar};
       });
-      const short = id => id.replace(/^eval-/, '');
       table($('.tb', sumBox), out, [
         ['id', '模型', r => `<span class="nm" title="${esc(r.id)}">${esc(short(r.id))}</span>`],
         ['ok', '成功', r => `${r.bar(r.n ? r.ok / r.n : 0, 'var(--ok)')} <b>${r.ok}</b>/${r.n}`, r => r.n ? r.ok / r.n : 0],
-        ['funnel', '走到各阶段的试次', r => r.funnel + (r.pending ? ` <span class="mute">算阶段中 ${r.pending}</span>` : ''), r => r.ok],
+        ['funnel', '阶段漏斗', r => r.funnel, r => r.ok, '每根柱 = 进入该阶段的试次占比，悬停看 通过 / 进入；和测试集打分页同一份数据'],
         ['mean', '成功试次平均用时', r => r.mean == null ? '–' : `<b>${r.mean.toFixed(1)}</b> s <span class="mute">中位 ${r.time.toFixed(1)} · ${r.tmin.toFixed(1)}–${r.tmax.toFixed(1)}</span>`, r => r.mean],
         ['rback', '规则倒退 / 条', r => r.rback == null ? '–' : `<b style="color:${r.rback ? 'var(--bad)' : 'inherit'}">${r.rback.toFixed(1)}</b>`, r => r.rback],
         ['pback', '模型倒退 / 条', r => r.pback == null ? '<span class="mute">无输出</span>' : `<b style="color:${r.pback ? 'var(--bad)' : 'inherit'}">${r.pback.toFixed(1)}</b>`, r => r.pback],
@@ -1425,28 +1491,30 @@ async function pageStage(q, view, tools) {
 // ---------- models: docs/models.csv (docs/workflows/sync/models.py), one row per model on HF ----------
 // What it is, what trained it, its evals. A training set / eval that is on this machine links to its page; the rest is grey.
 async function pageModels(q, view, tools) {
-  $('#picker').innerHTML = '';
   const {rows} = await api('/api/models');
-  tools.innerHTML = `<input id="mq" placeholder="筛选：名字、说明、训练集" style="width:220px"> <span class="mute">${rows.length} 个模型，来自 docs/models.csv
-    （python docs/workflows/sync/models.py 从 HF 重新生成，说明列手写）。评测列 = 成功数 / 试次数。灰色 = 这台机器上没有这份数据。点表头排序。</span>`;
-  view.innerHTML = '<div class="panel models"><div class="tb"></div></div>';
-  showInfo([], rows.length + ' 个模型');
+  let E = {};  // eval id -> its history row (total, stages), for the evals that are on this machine
+  tools.innerHTML = '<input id="mq" placeholder="筛选：名字、说明、训练集" style="width:220px">';
+  view.innerHTML = `<div class="panel models" id="hist"><h3>模型总表${facts([[rows.length + ' 个']])}</h3><div class="tb"></div></div>`;
   const link = (id, page, text) => G.by[id] ? `<a href="#${page}?ds=${encodeURIComponent(id)}">${esc(text)}</a>` : `<span class="mute">${esc(text)}</span>`;
   const evals = r => (r.eval ? r.eval.split('; ') : []).map(e => { const [nr, kn] = e.split(' '), id = nr.split('@')[0];
     return link(id, 'eval', id.slice(5 + r.model.length).replace(/^_/, '') || '评测') + ` <b>${esc(kn)}</b>`; }).join('<br>');
   const rate = r => { const m = /(\d+)\/(\d+)/.exec(r.eval || ''); return m && +m[2] ? m[1] / m[2] : null; };  // of its first eval
+  const own = r => E['eval-' + r.model] || {};
   const draw = () => { const s = $('#mq').value.trim().toLowerCase();
     table($('.tb', view), rows.filter(r => !s || (r.model + r.note_zh + r.dataset).toLowerCase().includes(s)), [
       ['model', '模型', r => `<b>${esc(r.model)}</b>`],
       ['note_zh', '说明', r => esc(r.note_zh)],
-      ['dataset', '训练集', r => link(r.dataset, 'review', r.dataset) + (r.data_rev ? ` <span class="mute">@${esc(r.data_rev)}</span>` : '')],
+      ['dataset', '训练集', r => link(r.dataset, 'review', r.dataset) + (r.data_rev ? ` <span class="mute">@${esc(r.data_rev)}</span>` : ''), null, '@ 后面是训练时的 HF revision'],
       ['steps', '步数', r => r.steps ? r.steps / 1000 + 'K' : '', r => +r.steps],
-      ['git', '代码', r => `<span class="mute">${esc(r.git)}</span>`],
+      ['git', '代码', r => `<span class="mute">${esc(r.git)}</span>`, null, '训练用的 git 提交'],
       ['wandb', 'W&B', r => r.wandb ? `<a target="_blank" href="https://wandb.ai/wwqcleverghost/${esc(r.wandb.replace('/', '/runs/'))}">曲线</a>` : ''],
-      ['eval', '评测', evals, rate],
-    ], () => {}); };
+      ['eval', '评测', evals, rate, '成功数 / 试次数；按第一个评测的成功率排序'],
+      ['total', '总分', r => own(r).total ? ciBar(own(r).total, 80) : '', r => own(r).total && own(r).total[0], '这台机器上 eval-<模型> 的总分 = 0.5 × 完成度 + 0.5 × 质量'],
+      ['funnel', '阶段漏斗', r => own(r).stages ? funnelMini(own(r).stages) : '', r => own(r).stages && own(r).stages[8].k, '每根柱 = 进入该阶段的试次占比，悬停看 通过 / 进入'],
+    ], null); };
   $('#mq').oninput = draw;
   draw();
+  historyRows('eval', h => { E = Object.fromEntries(h.rows.map(x => [x.id, x])); draw(); });
 }
 
 const PAGES = {review: pageReview, batch: pageBatch, quality: pageQuality, models: pageModels, eval: pageEval, stage: pageStage, curate: pageQuality};  // #curate: old links
@@ -1455,11 +1523,12 @@ async function show() {
   clearTimeout(G.buildT); clearTimeout(G.histT);
   $('#builds') && $('#builds').remove();
   $('#modal').open && $('#modal').close();
-  const {page, q} = route();
+  const {page, q} = route(), my = G.nav = (G.nav || 0) + 1;
   $$('.tabs a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + page));
   const view = $('#view'), tools = $('#tools');
   view.innerHTML = ''; view.style.cssText = ''; tools.innerHTML = '';
-  try { await (PAGES[page] || pageReview)(q, view, tools); } catch (e) { console.error(e); view.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  $('#picker').innerHTML = ''; status(''); showInfo([]); $('.helppop') && $('.helppop').remove();  // shared slots start empty on every page
+  try { await (PAGES[page] || pageReview)(q, view, tools); } catch (e) { if (my === G.nav) { console.error(e); view.innerHTML = errLine(e); } }  // a page the user already left stays silent
 }
 window.addEventListener('hashchange', show);
 document.addEventListener('keydown', ev => {
@@ -1476,6 +1545,7 @@ document.addEventListener('keydown', ev => {
   G.stageEdit = LS.get('stage_edit', false);
   $('#stageEdit').checked = G.stageEdit;
   $('#stageEdit').onchange = ev => { G.stageEdit = ev.target.checked; LS.set('stage_edit', G.stageEdit); allCurves.forEach(c => c.draw()); };
+  $('#help').onclick = ev => { ev.stopPropagation(); toggleHelp(); };
   api('/api/stage_rules').then(rules => {
     if (!rules[G.stage]) G.stage = '';
     $('#stage').innerHTML = '<option value="">关</option>' + Object.entries(rules).map(([k, r]) =>

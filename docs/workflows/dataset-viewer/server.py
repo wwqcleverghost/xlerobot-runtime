@@ -34,6 +34,7 @@ for p in ("src", "src/lerobot/scripts", "examples/xlerobot", "docs/workflows/eva
           "docs/workflows/eval-scoring"):
     sys.path.insert(0, str(REPO / p))
 from lerobot.scripts.lerobot_dataset_quality import episode_metrics, flag_outliers  # noqa: E402
+import mark_end  # noqa: E402
 import report  # noqa: E402
 from mark_end import reset_start, task_end  # noqa: E402
 from make_grid import first_arm  # noqa: E402
@@ -235,6 +236,23 @@ def stages(ds_id, ep, rule):
                 edits=ed, editable=rule == "fine9")
 
 
+def fine9_of(ds_id):
+    """ep -> per-frame fine9 labels of this dataset (hand-set starts included), what mark_end.py scores with."""
+    return lambda ep: np.concatenate([[g] * (b - a) for a, b, g in stages(ds_id, int(ep), "fine9")["segs"]])
+
+
+def ends_of(ds_id):
+    """episode_end.csv of a dataset (eval-scoring/mark_end.py: task end, how, furthest fine9 stage per episode), indexed by
+    episode. Written when it is missing: that decodes the wrist videos of every episode once."""
+    o = load(ds_id)
+    path = mark_end.end_file(str(o["root"]))
+    mt = os.path.getmtime(path) if os.path.exists(path) else None
+    if mt is None or o.get("ends", (None,))[0] != mt:
+        df = mark_end.load(str(o["root"]), fine9_of(ds_id), set(o["eps"].index))
+        o["ends"] = (os.path.getmtime(path), df)
+    return o["ends"][1]
+
+
 def stage_view(ds_id, src="live"):
     """Per episode of an eval: the task end (episode_end.csv of eval-scoring/mark_end.py; without it, computed here from the
     live stage of stages.csv, else None: mark_end.py recomputes fine9 from the videos, too slow for this request)
@@ -402,10 +420,17 @@ def rule_eps(o, source, reset_tol, to_target, snap_rule):
     return out
 
 
-def range_q(a, s, f, e):
-    """report.py quality of the kept frames [f, e) vs the human demos: [q, smooth, speed, idle]. Speed is NaN (not
-    counted) where the kept part is not a whole task, e.g. a takeover segment."""
-    q, sub = report.quality(pd.DataFrame([report.trial(s[f:e], a[f:e])]), ref())
+def range_q(ds_id, ep, a, s, f, e):
+    """report.py quality of the kept frames [f, e) vs the human demos: [q, smooth, speed, idle]. The task end is the first
+    复位 frame (episode_end.csv) when it lies inside the kept part; else speed is NaN (not counted): the kept part is not a
+    whole task, e.g. a takeover segment."""
+    try:
+        r = ends_of(ds_id).loc[ep]
+        whole = r.how == "reset" and f <= r.end_frame < e
+    except Exception:  # no fine9 for this dataset (e.g. no wrist cameras): quality without the speed term
+        whole = False
+    t = report.trial(s[f:e], a[f:e], None, int(r.end_frame) - f if whole else None, "reset" if whole else None)
+    q, sub = report.quality(pd.DataFrame([t]), ref())
     return [float(q[0]), *map(float, sub.iloc[0][["smooth", "speed", "idle"]])]
 
 
@@ -421,7 +446,7 @@ def seg_cards(name, source, labels):
         for i, (f, e) in enumerate(first["segments"][k]):
             cur = segs[i]
             out.append(dict(ep=int(k), seg=i, n=len(a), first=f, end=e, pfirst=f, pend=e, pdrop=False, snaps=snaps(a, s, 0, len(a)),
-                            pauses=pauses(a, *cur), arm=first_arm(a), q=range_q(a, s, *cur), ds=ds_id, repo=source["repo"], video=videos(ds_id, o, int(k)),
+                            pauses=pauses(a, *cur), arm=first_arm(a), q=range_q(ds_id, int(k), a, s, *cur), ds=ds_id, repo=source["repo"], video=videos(ds_id, o, int(k)),
                             label=labels.get(ds_id, {}).get(f"{k}.{i}", {}),
                             edit=dict(range=cur, cut=[], drop=i in source.get("drop_seg", {}).get(k, []))))
     return out
@@ -441,7 +466,7 @@ def review(name, reset_tol, to_target, snap_rule):
             lab = labels.get(ds_id, {}).get(k, {})
             a, s = ep_arrays(o, r["ep"])
             r.update(ds=ds_id, repo=source["repo"], video=videos(ds_id, o, r["ep"]), label=lab,
-                     q=range_q(a, s, *(rng.get(k) or (r["pfirst"], r["pend"]))),
+                     q=range_q(ds_id, r["ep"], a, s, *(rng.get(k) or (r["pfirst"], r["pend"]))),
                      edit=dict(range=rng.get(k), cut=cut.get(k, []), drop=r["ep"] in drop))
             out.append(r)
     return dict(spec=name, fps=30, episodes=out, sources=[dict(repo=s["repo"], ds=ds_id_of(s), dst=s.get("dst", "")) for s in spec],
@@ -594,20 +619,21 @@ def builds():
 
 def ref():
     if "ref" not in _cache:
-        df, _ = report.trials(str(root_of(REF)))
+        df, _ = report.trials(str(root_of(REF)), REF, fine9_of(REF))
         _cache["ref"] = {"rev_rate": float(df.rev_rate.median()), "task_s": float(df.task_s.median())}
     return _cache["ref"]
 
 
 def scored(ds_id):
-    """report.trials + quality per episode, cached with the dataset."""
+    """report.trials + quality per episode, cached with the dataset, its episode_end.csv and its notes."""
     o = load(ds_id)
-    if "trials" not in o:
-        df, is_eval = report.trials(str(o["root"]))
+    key = (id(ends_of(ds_id)), repr(report.notes(ds_id)))
+    if o.get("trials", (None,))[0] != key:
+        df, is_eval = report.trials(str(o["root"]), ds_id, fine9_of(ds_id))
         q, sub = report.quality(df, ref())
-        o["trials"] = (df.assign(q=q.values, q_smooth=sub.smooth.values, q_speed=sub.speed.values, q_idle=sub.idle.values),
-                       is_eval)
-    return o["trials"]
+        o["trials"] = (key, (df.assign(q=q.values, q_smooth=sub.smooth.values, q_speed=sub.speed.values, q_idle=sub.idle.values),
+                             is_eval))
+    return o["trials"][1]
 
 
 def _quality(ds_id):
@@ -648,7 +674,8 @@ def _evaluation(ds_id):
     trials = []
     for _, r in df.iterrows():
         a, st = ep_arrays(o, int(r.ep))
-        trials.append(dict(ep=int(r.ep), label=int(o["success"].get(int(r.ep), 0)), stages=[int(r[x]) for x in report.STAGES],
+        # top = the stage the trial got to (entered, not passed; 8 with success = all passed); top_by = label / note / rule
+        trials.append(dict(ep=int(r.ep), label=int(o["success"].get(int(r.ep), 0)), top=int(r.top), top_by=r.top_by,
                            success=int(r.success), q=r.q, q_smooth=r.q_smooth, q_speed=r.q_speed, q_idle=r.q_idle,
                            task_s=r.task_s, rev_rate=r.rev_rate, idle_frac=r.idle_frac, n=len(a),
                            fail=None if r.success else fail_time(st, a, o["fps"])))
@@ -662,28 +689,32 @@ def _evaluation(ds_id):
 # Scores are cached on disk (outputs/dataset_viewer/cache/scores) until the dataset's files or a scoring script change,
 # so the history tables open at once; a background thread fills in what is missing.
 CODE = [REPO / f for f in ("docs/workflows/eval-scoring/report.py", "docs/workflows/eval-scoring/score.py",
-                           "docs/workflows/eval-scoring/smooth.py", "src/lerobot/scripts/lerobot_dataset_quality.py")]
+                           "docs/workflows/eval-scoring/mark_end.py", "docs/workflows/eval-scoring/smooth.py",
+                           "src/lerobot/scripts/lerobot_dataset_quality.py")]
 CURATE_CODE = CODE + [REPO / f for f in ("docs/workflows/dataset-viewer/curate.py", "docs/workflows/handover-dataset-curation/review_page.py",
                                           "docs/workflows/handover-dataset-curation/ep_score.py")]
-SCORE_VERSION = 1  # bump when _quality / _evaluation change what they return
+SCORE_VERSION = 2  # bump when _quality / _evaluation change what they return. 2 (2026-11-14): 9 fine9 stages for everything
 score_lock = threading.Lock()  # report.rng is global: one scoring at a time
 _failed = {}
 
 
 def score_key(ds_id, kind="quality"):
     root = root_of(ds_id)
+    # episode_end.csv of the dataset and of the human reference (stages, task ends) and the dataset's notes (a note can
+    # name the failure stage) are part of the score
     files = sorted(glob.glob(str(root / "data/*/*.parquet"))) + [str(root / "meta/info.json"), str(root / "success.csv"),
-                                                                  str(root_of(REF) / "meta/info.json")]
-    stamp = [(f, os.path.getmtime(f) if os.path.exists(f) else 0) for f in files] + [os.path.getmtime(f) for f in (CURATE_CODE if kind == "curate" else CODE)] + [SCORE_VERSION]
+                                                                  mark_end.end_file(str(root)), str(root_of(REF) / "meta/info.json"),
+                                                                  mark_end.end_file(str(root_of(REF)))]
+    stamp = [(f, os.path.getmtime(f) if os.path.exists(f) else 0) for f in files] + [os.path.getmtime(f) for f in (CURATE_CODE if kind == "curate" else CODE)] + [SCORE_VERSION, repr(report.notes(ds_id))]
     return hashlib.md5(repr(stamp).encode()).hexdigest()
 
 
 def cached(kind, ds_id, compute=True):
-    path = OUT / "cache/scores" / f"{ds_id.replace('/', '__')}.{kind}.json"
-    key = score_key(ds_id, kind)
+    # the version is in the file name: scores of the 5-stage rule (version 1, no suffix) stay on disk next to these
+    path = OUT / "cache/scores" / f"{ds_id.replace('/', '__')}.{kind}.v{SCORE_VERSION}.json"
     try:
         c = json.load(open(path))
-        if c["key"] == key:
+        if c["key"] == score_key(ds_id, kind):
             return c["value"]
     except (FileNotFoundError, ValueError, KeyError):
         pass
@@ -692,7 +723,7 @@ def cached(kind, ds_id, compute=True):
     with score_lock:
         value = jsonable({"quality": _quality, "eval": _evaluation, "curate": _curate}[kind](ds_id))
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(path, {"key": key, "value": value})
+    write_json(path, {"key": score_key(ds_id, kind), "value": value})  # key after computing: that may write episode_end.csv
     return value
 
 
@@ -770,6 +801,11 @@ def version(ds_id):
     return int(m[1]) if m else 0
 
 
+def errmsg(e):
+    """Short text for the page; data that is not on this machine (videos not downloaded) is said plainly."""
+    return f"这台机器上缺少文件：{Path(e.filename).name}" if isinstance(e, FileNotFoundError) and e.filename else f"{type(e).__name__}: {e}"
+
+
 _worker = {"thread": None, "todo": []}
 
 
@@ -790,7 +826,8 @@ def history(kind):
             rows.append(dict(v["summary"], version=version(d["id"])))
     if pending:
         with lock:
-            _worker["todo"] = [(kind, i) for i in pending]
+            # merged, not replaced: the eval and the training-set tables poll in turn and must not drop each other's queue
+            _worker["todo"] = list(dict.fromkeys(_worker["todo"] + [(kind, i) for i in pending]))
             if not (_worker["thread"] and _worker["thread"].is_alive()):
                 _worker["thread"] = threading.Thread(target=fill, daemon=True)
                 _worker["thread"].start()
@@ -807,7 +844,7 @@ def fill():
             cached(kind, ds_id)
             _failed.pop((kind, ds_id), None)
         except Exception as e:
-            _failed[(kind, ds_id)] = (score_key(ds_id, kind), f"{type(e).__name__}: {e}")
+            _failed[(kind, ds_id)] = (score_key(ds_id, kind), errmsg(e))
 
 
 # ---------- http ----------
@@ -863,7 +900,7 @@ def review_ds(ds_id):
         a, s = ep_arrays(o, ep)
         n = len(a)
         out.append(dict(ep=int(ep), n=n, first=0, end=n, pfirst=0, pend=n, pdrop=False, snaps=snaps(a, s, 0, n), pauses=pauses(a, 0, n),
-                        arm=first_arm(a), q=range_q(a, s, 0, n), ds=ds_id, repo=source_of(ds_id)["repo"], video=videos(ds_id, o, int(ep)),
+                        arm=first_arm(a), q=range_q(ds_id, ep, a, s, 0, n), ds=ds_id, repo=source_of(ds_id)["repo"], video=videos(ds_id, o, int(ep)),
                         label=labels.get(str(ep), {}), edit=dict(range=None, cut=[], drop=False)))
     return dict(spec=None, fps=o["fps"], episodes=out, sources=[dict(repo=source_of(ds_id)["repo"], ds=ds_id, dst="")], rule=None)
 
@@ -888,7 +925,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # shown on the page
             import traceback
             traceback.print_exc()
-            return self.send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False).encode())
+            return self.send(500, json.dumps({"error": errmsg(e), "detail": f"{type(e).__name__}: {e}"}, ensure_ascii=False).encode())
         try:
             self.send(200, body)
         except (BrokenPipeError, ConnectionResetError):

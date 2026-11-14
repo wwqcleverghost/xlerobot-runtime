@@ -15,6 +15,23 @@ PYTHONPATH=src /home/wwq/miniconda3/envs/lerobot/bin/python docs/workflows/datas
 Port: `--port`, or the `PORT` environment variable (default 8770). Python standard library `http.server` only, no new dependency;
 listens on 127.0.0.1 only. In Claude Code it can also be started with the `dataset-viewer` configuration of `.claude/launch.json`.
 
+## Page format (read before changing this tool)
+
+A page is not a scratchpad: every page has only the slots below; new content goes into one of them, never as a loose sentence on the page.
+
+1. **Toolbar**: controls and legends only.
+2. **The "说明" (help) button** (right end of the top bar, one per page): the terms, formulas and keys of that page, always a
+   "term — definition" list. The text lives in the `HELP` table of `app.js`.
+3. **Panel** = title + one row of facts (`facts()`, e.g. `50 条` `规则阶段 stages.csv`) + content. No remark in brackets or sentence after the title.
+4. **What a column means**: the tooltip of its header (5th element of a `table()` column).
+5. **States**: the three fixed texts of `state()`: `加载中…`, `未选择数据集`, `没有数据`; errors with `errLine()`, a short red line, the raw exception in its tooltip.
+6. **Warnings and hints**: `status()`, shown in the status slot of the top bar.
+7. **Numbers**: counts as `k/n`; rates with `ciBar`; times as `x.x s`; eval names without the `eval-` prefix (`short()`).
+
+There is one set of stages: the 9 `fine9` stages, names from the server, colours `--s1`…`--s9` (`sv()`). There is one funnel
+(`funnelTable()` / `funnelMini()`); its data is the server's `stages` (passed / entered per stage), the same numbers the score is
+made of ([`../eval-scoring/`](../eval-scoring/README.md)).
+
 ## Video
 
 The page plays the dataset's own mp4 files (`videos/observation.images.<cam>/chunk-XXX/file-XXX.mp4`, h264 / yuv420p, which browsers play
@@ -169,29 +186,34 @@ Steps for agents: `.claude/skills/select-high-quality-data/SKILL.md`.
 With the rules of [`../eval-scoring/README.md`](../eval-scoring/README.md) (calls `report.py` directly):
 
 - **History table**: every eval, newest version first, by total within a version; success rate (Wilson), completion, quality and total
-  with 95% CI, stage funnel `passed/reached`. Click a row for details.
-- **Details**: stage funnel (per stage `passed/reached`, Wilson interval, and the (passed+1)/(reached+2) used for the score) and the per-trial
-  table (human label, the 5 stages, smooth / speed / idle, quality, task time).
+  with 95% CI; the stage funnel is 9 small bars (height = share of the trials that entered the stage, hover for `passed/entered`).
+  Click a row for details.
+- **Details**: the 9-stage funnel (per stage `passed/entered`, pass rate with its Wilson interval) and the per-trial table (human label,
+  failure stage, 9 squares for the stages: solid = passed, red frame = entered and not passed, grey = not reached; smooth / speed / idle,
+  quality, task time). Funnel, failure stage and completion are the same data.
 - Failed trials have a "▶ failure moment" button: playback starts 1.5 s before it, a red dashed line marks it on the curves. The moment is
   approximate: 0.5 s before the last grasp ended (tape dropped or released); 3 s before the end when the tape was never held.
-- **Failure stage from the note** (2026-11-13): when the note of a failed trial says "<stage>失败" (a 9-stage name, e.g. `AB对位失败`,
-  `B抓住失败`), the 9-stage funnel in the details, the "失败阶段" (failure stage) column and the funnel of the "阶段 / 进度" page use it:
-  the trial reached that stage and none after it. Without such a note it is the furthest stage the rule read (marked "规则" in the column).
-  The rule reads a gripper closing on nothing as a later stage, so what a person saw wins.
+- **Failure stage from the note**: when the note of a failed trial says "<stage>失败" (e.g. `AB对位失败`, `B抓住失败`), the trial counts as
+  having got to that stage without passing it; without such a note it is the furthest stage the rule read (the "失败阶段" column says
+  "备注" or "规则"). The rule reads a gripper closing on nothing as a later stage, so what a person saw wins.
+  Since 2026-11-14 the note **counts in completion**: after a note changes, that eval is scored again (the page refreshes about 1 s later).
   With a note, the failure moment is no later than 0.5 s before the first return to an earlier stage after that stage (a retry at the very
-  end is not the failure moment). Display only: completion is still scored on the 5 stages and does not read notes.
+  end is not the failure moment).
 
-Both score pages cache their results in `outputs/dataset_viewer/cache/scores/`; they are recomputed when the dataset's files or a scoring
-script (report.py, score.py, smooth.py, lerobot_dataset_quality.py) change. The first time a history table opens, a background thread
-computes what is missing (about 1 minute for all) and the table fills in as it goes; after that it opens in under a second.
+Both score pages cache their results in `outputs/dataset_viewer/cache/scores/` (the file name carries `SCORE_VERSION`: `.v2.json` is the
+9-stage rule; files without a version are the scores of the 5-stage rule from before 2026-11-14, kept). They are recomputed when the
+dataset's files, its `episode_end.csv`, its notes or a scoring script (report.py, score.py, mark_end.py, smooth.py,
+lerobot_dataset_quality.py) change. The first time a history table opens, a background thread computes what is missing and the table
+fills in as it goes; the first scoring of a dataset writes its `episode_end.csv`, which decodes the wrist videos of every episode
+(about 1 minute for 50 episodes). After that it opens in under a second.
 Bump `SCORE_VERSION` when `_quality` / `_evaluation` in `server.py` change what they return.
 
 ## 5. Stages / progress (`#stage`)
 
 For the stage models (stage input, stage head, `*-stagepred`, `*-progpred`, see [`../stage-labels/README.md`](../stage-labels/README.md)).
-Pick one or more evals. At the top, **model comparison**, one line per eval (sortable; click a line to jump to its trials):
-success k/n, how many trials reached each of the 9 stages (one bar per stage, its height = the share of trials that got there,
-hover for counts), mean time of the successful trials (frame 0 to the task end, see below) with median and min–max, rule and model ▼ per trial, and
+Pick one or more evals (the same selection as the eval scores page). At the top, **model comparison**, one line per eval (sortable;
+click a line to jump to its trials): success k/n, the stage funnel (the same data as on the eval scores page: one bar per stage,
+its height = the share of trials that entered it, hover for passed / entered), mean time of the successful trials (frame 0 to the task end, see below) with median and min–max, rule and model ▼ per trial, and
 "模型 = 规则" = the share of frames before the end where the model's stage equals the rule's.
 
 Below, one row per trial, all rows on one time axis (gridline every 5 s), so lengths compare at a glance:
@@ -237,7 +259,7 @@ with `python docs/workflows/sync/models.py`, the note columns are typed, see [`.
 A select in the top bar draws per-frame task stages as a colored band above every set of joint curves (review cards and the episode
 pop-up on every page); hover the band for the stage name and its time range. The stage definitions, rules and their accuracy are in
 [`../stage-labels/README.md`](../stage-labels/README.md); the code is [`examples/xlerobot/stage_labels.py`](../../../examples/xlerobot/stage_labels.py).
-The select offers `fine9` (causal, what the robot can compute live, the labels training uses) and `eval5` (eval scoring); the reference
+The select offers only `fine9` (causal, what the robot can compute live; training and eval scoring both use it); the reference
 `std9` is only on the command line, for checking (`--compare`). `fine9` measures the tape in the wrist cameras: the first time an episode is shown it decodes both wrist videos (about 6 s),
 cached in `outputs/dataset_viewer/cache/tape/`.
 

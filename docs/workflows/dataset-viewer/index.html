@@ -97,7 +97,13 @@ table.rt td:nth-child(3){white-space:nowrap} table.rt td:nth-child(2){min-width:
 .fcard figure{margin:0} .fcard figcaption{font-size:11px;color:var(--mute)} .fimg{aspect-ratio:4/3;background:var(--cut);border-radius:4px;overflow:hidden}
 .fimg img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in} .fcard footer{display:flex;gap:6px}
 .pickbar{background:var(--soft);border-radius:6px;padding:2px 8px}
-.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:2px;vertical-align:-1px} .dot.p{background:var(--ok)} .dot.f{background:var(--bad)} .dot.n{background:var(--line)}
+.sq{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:2px;vertical-align:-1px;box-sizing:border-box} .sq.n{background:var(--line)} .sq.f{border:2px solid var(--bad)}
+/* page format: facts after a panel title, the stat row of a panel, the help popover */
+.facts{display:inline-flex;gap:6px;flex-wrap:wrap;font-weight:400;font-size:12px;margin-left:8px;vertical-align:1px} .fact{background:var(--soft);border-radius:6px;padding:0 7px;color:var(--mute)}
+.fact b{color:var(--ink);font-weight:600} .fact.bad,.fact.bad b{color:var(--bad)} p>.facts{margin-left:0}
+.stats{display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin:4px 0 8px}
+.helppop{position:absolute;right:16px;left:auto;top:100%;z-index:30;width:min(680px,92vw);max-height:70vh;overflow:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 24px #0003;padding:10px 14px}
+.helppop dl{display:grid;grid-template-columns:max-content 1fr;gap:5px 12px;margin:0} .helppop dt{font-weight:600;white-space:nowrap} .helppop dd{margin:0;color:var(--mute)}
 /* modal & build log */
 dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);padding:12px 14px;max-width:min(1100px,96vw);width:96vw}
 dialog::backdrop{background:#0007} dialog .player{width:min(440px,100%)} dialog>header{position:sticky;top:-12px;background:var(--card);z-index:5;padding:4px 0}
@@ -119,6 +125,7 @@ dialog::backdrop{background:#0007} dialog .player{width:min(440px,100%)} dialog>
     <div class="picker" id="picker"></div>
     <span id="info"></span>
     <span id="status"></span>
+    <button id="help" style="margin-left:auto" title="这一页的名词和算法">说明</button>
   </div>
   <div class="tools" id="tools"></div>
 </div>
