@@ -5,7 +5,8 @@
 Labels every frame of a handover episode with its task stage, as an extra model input (`observation.environment_state`) so the model knows
 how far the task has got and stops confusing the start with the end. Code: [`examples/xlerobot/stage_labels.py`](../../../examples/xlerobot/stage_labels.py);
 the "阶段" select in the dataset viewer's top bar shows them ([`../dataset-viewer/README.md`](../dataset-viewer/README.md)).
-The 5 eval-scoring stages (`score.stage_frames`, see [`../eval-scoring/README.md`](../eval-scoring/README.md)) are rule `eval5` here.
+Eval scoring uses these 9 stages too (since 2026-11-14, see [`../eval-scoring/README.md`](../eval-scoring/README.md)): after changing a rule here or
+a hand-set stage start, run `eval-scoring/mark_end.py` again so the scores follow.
 
 **In short**: label a training set → train on `<name>-stagelabel` → in real-robot eval the scripts compute the stage live and feed it to the
 model **automatically** (see "Eval"). When the rules change, label already-labelled datasets again (see "Writing them into a dataset"), or
@@ -324,7 +325,7 @@ No extra flag; no `Stage input on` line means the model has no such input.
 ## Command line
 
 ```bash
-PYTHONPATH=src python examples/xlerobot/stage_labels.py --dataset v8-handover2-stagelabel [--rule fine9|std9|eval5] [--episodes 0 1] [--compare]
+PYTHONPATH=src python examples/xlerobot/stage_labels.py --dataset v8-handover2-stagelabel [--rule fine9|std9] [--episodes 0 1] [--compare]
 ```
 
 `--compare`: compares `--rule` with `std9` episode by episode and prints frame agreement and how many frames later each stage is entered.

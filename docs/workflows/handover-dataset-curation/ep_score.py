@@ -1,6 +1,7 @@
 """The per-episode checks of README.md, automated for the raw handover datasets (handover2, handover1): trim range,
 final placement (tape pixels in the last head frame), tape standing at the start (tall blob), gripper closes per arm,
-first holding arm vs the midline rule, duration / longest pause and the IQR flags of lerobot_dataset_quality.py,
+first holding arm vs the midline rule, furthest fine9 stage and task end (eval-scoring/mark_end.py), duration / longest
+pause and the IQR flags of lerobot_dataset_quality.py,
 plus start / release / end head-camera sheets to confirm by eye.
 usage: PYTHONPATH=src:docs/workflows/eval-scoring:examples/xlerobot python docs/workflows/handover-dataset-curation/ep_score.py <out_dir>
 Writes <out_dir>/episodes.csv and start|release|end head-camera sheets (25 episodes per jpg)."""
@@ -11,6 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from trim_stagnant_frames import keep_range
 from score import score, runs, GAP
+import mark_end
 sys.path.insert(0, 'src/lerobot/scripts')
 from lerobot_dataset_quality import episode_metrics, flag_outliers
 
@@ -36,8 +38,9 @@ def yellow(img):   # tape pixels (yellow) in a head frame: count and centroid
 if __name__ == '__main__':
     OUT = Path(sys.argv[1]); OUT.mkdir(parents=True, exist_ok=True)
     rows = []
-    for repo in ["handover2", "handover1"]:
+    for repo in ["v2-handover2", "v1-handover1"]:
         ds = LeRobotDataset(f"wwqcleverghost/{repo}")
+        ends = mark_end.load(str(ds.root))   # task end (first 复位 frame) and furthest stage of every raw episode
         t = ds.hf_dataset.with_format("numpy")
         A, S = np.asarray(t["action"]), np.asarray(t["observation.state"])
         bounds = list(zip(ds.meta.episodes["dataset_from_index"], ds.meta.episodes["dataset_to_index"]))
@@ -45,9 +48,10 @@ if __name__ == '__main__':
         for ep, (lo, hi) in enumerate(bounds):
             f, e = keep_range(A[lo:hi], S[lo:hi], POS, 0.2, 2.0, 3.0)
             a, s = A[lo + f:lo + e], S[lo + f:lo + e]
-            r = score(s, a)
+            reset = ends.how[ep] == 'reset' and f <= ends.end_frame[ep] < e
+            rel = int(ends.end_frame[ep]) - f if reset else len(a) - 1   # release = the task end inside the kept range
+            r = score(s, a, rel)
             q = episode_metrics(a[:, :12].astype(float), ds.fps, s[:, :12].astype(float))
-            rel = int(r['done'] * ds.fps) if r['done'] else len(a) - 1
             frames = {k: (ds[lo + f + i][HEAD].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
                       for k, i in [('start', 0), ('release', min(rel + 15, len(a) - 1)), ('end', len(a) - 1)]}
             ys = {k: yellow(v) for k, v in frames.items()}
@@ -55,8 +59,8 @@ if __name__ == '__main__':
             first_arm = min((v[0][0], k) for k, v in hold.items() if v)[1] if any(hold.values()) else ''
             metrics[ep] = q
             rows.append(dict(repo=repo, ep=ep, first=f, end=e, raw_s=round((hi - lo) / ds.fps, 1),
-                             dur=round(len(a) / ds.fps, 1), stages=''.join(map(str, r['stage'])), total=r['total'],
-                             done_s=r['done'], holds=r['grasps'], closesL=closes(a[:, 5]), closesR=closes(a[:, 11]),
+                             dur=round(len(a) / ds.fps, 1), top_stage=int(ends.top_stage[ep]),
+                             end_s=round(rel / ds.fps, 1) if reset else None, holds=r['grasps'], closesL=closes(a[:, 5]), closesR=closes(a[:, 11]),
                              idle=r['idle'], medJerk=round(q['median_jerk']), p95Jerk=round(q['p95_jerk']),
                              maxVel=round(q['max_velocity']), static=round(q['static_fraction'], 3),
                              maxPause=round(q['max_pause_s'], 1), tail_s=round((len(a) - 1 - rel) / ds.fps, 1),
@@ -65,7 +69,7 @@ if __name__ == '__main__':
             for k, name in enumerate(['start', 'release', 'end']):
                 cell.paste(Image.fromarray(frames[name]).resize((160, 120)), (k * 160, 22))
             d = ImageDraw.Draw(cell)
-            d.text((3, 3), f"{repo[-1]}:{ep} {r['stage']} {len(a)/ds.fps:.0f}s cL{rows[-1]['closesL']} cR{rows[-1]['closesR']} y{ys['end'][0]}",
+            d.text((3, 3), f"{repo[-1]}:{ep} s{ends.top_stage[ep]} {len(a)/ds.fps:.0f}s cL{rows[-1]['closesL']} cR{rows[-1]['closesR']} y{ys['end'][0]}",
                    font=FONT, fill=(255, 255, 0))
             thumbs.append(cell)
             print(rows[-1], flush=True)

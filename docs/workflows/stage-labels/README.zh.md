@@ -5,7 +5,8 @@ English: [README.md](README.md)
 给交接（handover）录像的每一帧标上任务阶段，用作模型的额外输入（`observation.environment_state`），让模型知道"做到哪一步了"，
 不再把开头和结尾搞混。代码：[`examples/xlerobot/stage_labels.py`](../../../examples/xlerobot/stage_labels.py)；
 网页工具顶栏"阶段"下拉框可以直接看（[`../dataset-viewer/README.zh.md`](../dataset-viewer/README.zh.md)）。
-评测打分的 5 阶段（`score.stage_frames`，见 [`../eval-scoring/README.zh.md`](../eval-scoring/README.zh.md)）在这里是规则 `eval5`。
+评测打分用的也是这 9 个阶段（2026-11-14 起，见 [`../eval-scoring/README.zh.md`](../eval-scoring/README.zh.md)）：改了这里的规则或手改了阶段起点，
+要重跑 `eval-scoring/mark_end.py`，分数才跟着变。
 
 **用法总结**：给训练集加标签 → 用 `<名字>-stagelabel` 训练 → 真机评测时脚本**自动**实时算阶段喂给模型（见"评测"）。
 规则一改，已经加过标签的数据集要重新加一次（见"写进数据集"），否则训练标签和评测时算出来的不一致。
@@ -294,7 +295,7 @@ deltainc 不逐维累加（2026-11-13）：纯增量没有往回拉的机制，�
 ## 命令行
 
 ```bash
-PYTHONPATH=src python examples/xlerobot/stage_labels.py --dataset v8-handover2-stagelabel [--rule fine9|std9|eval5] [--episodes 0 1] [--compare]
+PYTHONPATH=src python examples/xlerobot/stage_labels.py --dataset v8-handover2-stagelabel [--rule fine9|std9] [--episodes 0 1] [--compare]
 ```
 
 `--compare`：把 `--rule` 和 `std9` 逐条比较，打印逐帧一致率和进入每个阶段晚多少帧。腕部相机的胶带直径第一次算要解码两路视频

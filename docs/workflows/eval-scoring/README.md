@@ -4,7 +4,8 @@
 
 Each model gets one score in 0-1: **total = 0.5 x completion + 0.5 x quality**, every number with a 95% confidence
 interval (CI). The CI width comes from the number of trials: 10 trials give wide intervals, so two models are only
-different when their intervals do not overlap. Rules agreed with the user on 2026-10-23.
+different when their intervals do not overlap. Rules agreed with the user on 2026-10-23; since 2026-11-14 everything is
+scored with one set of stages, the 9 `fine9` stages (user: "whichever stages the score uses, score by those").
 
 ```bash
 python docs/workflows/eval-scoring/report.py <out_prefix> <human_ref_demo_dir> <dataset_dir> ...
@@ -15,35 +16,42 @@ python docs/workflows/eval-scoring/report.py <out_prefix> <human_ref_demo_dir> <
 - Writes `<out_prefix>.csv` (one row per dataset, all scores and CIs) and `<out_prefix>.svg` (one stacked bar per
   dataset: blue = 0.5 x completion, orange = 0.5 x quality, whisker = CI of the total; demo datasets draw completion as a
   dashed 1.0 box for comparison). Put results in `outputs/eval_scores_<date>/`. Example: `outputs/eval_scores_20261023/`.
-- Reads only `observation.state` and `action`; no video. lerobot env (no matplotlib needed).
+- Reads `observation.state`, `action` and each dataset's `episode_end.csv` (stages and task end, written by `mark_end.py`,
+  see below). When that file is missing `report.py` writes it first, which decodes the wrist videos once.
+  lerobot env (no matplotlib needed).
+
+## Stages
+
+One set of stages for everything, scoring and display: the 9 `fine9` stages of [`../stage-labels/`](../stage-labels/README.md),
+A前往, A对位, A抓住, A抓着, AB对位, B抓住, B抓着, B放下, 复位 (stage 0 to 8). Per frame they are the live rule stage in the
+eval's `stages.csv` when the eval wrote one, else `fine9` recomputed from the wrist videos. `mark_end.py` stores per episode
+the furthest stage (`top_stage`) and the task end (the first 复位 frame) in `episode_end.csv`.
 
 ## Completion (evals only)
 
-Five stages, detected from the grippers by `score.py` (holding = commanded closed while the measured position stalls
->= 2 units above the command for >= 0.5 s):
-1. reach (前往) — an arm moved > 30 units and opened its gripper
-2. grasp (抓住) — the tape is held (regrasps allowed)
-3. no drop (交接前不掉) — while the first arm still holds, the other arm starts holding or its open gripper is
-   commanded closed (a take-over attempt). A failed take-over counts against "handover", not here (fixed
-   2026-10-23; before that v6-flow_h16_s8 ep18 and ep34 were misattributed to this stage)
-4. handover (交接成功) — both hold >= 0.5 s, then the first arm opens
-5. place (放好) — the second arm opens afterwards
-
-- **Stage pass rate = (passed + 1) / (reached + 2)**. A trial that never reached a stage does not count against it.
+- A trial **entered** a stage when its furthest stage is that one or a later one, and **passed** it when it entered the next
+  one. The last stage (复位) is passed when the human label says success.
+- **The human judgement is final** (no video review needed): label success -> all 9 stages pass. Label fail and the
+  trial's note in the dataset viewer names a stage (`AB对位失败`: a stage name followed by 失败) -> the trial got to that
+  stage and did not pass it. Label fail without such a note -> the furthest stage the rule saw. The rule reads a gripper
+  closing on nothing as a later stage, so a failed trial without a note can be credited with too much: write the note.
+- **Stage pass rate = (passed + 1) / (entered + 2)**. A trial that never entered a stage does not count against it.
   The +1/+2 pulls stages with few trials toward 0.5 (1/2 becomes 0.5, 7/7 becomes 0.89).
 - Each stage rate is **truncated**: rate <= 0.5 scores 0, 1.0 scores 1, linear in between. Completion = mean of the
-  5 truncated rates.
-- The human success label in `success.csv` is final (no video review): label success -> all stages pass; label fail
-  but all 5 auto stages pass -> place fails. Auto and human agreed on 105/110 trials (2026-10-20).
+  9 truncated rates.
 - Also reported, not in the score: plain success rate (e.g. 7/10) with a Wilson CI, and each stage as
-  `passed/reached [CI]` (the funnel: shows where a model fails).
+  `passed/entered [CI]` (the funnel: shows where a model fails).
 
 ## Quality (evals and demo datasets)
 
 Per trial, weighted, compared with the human reference median:
 - **smooth (0.4)** — small joint reversals per second of motion (`smooth.py`: 0.5 dead band, swing < 5)
-- **speed (0.3)** — task time from first motion to the place release; successful trials only
-- **idle (0.3)** — share of the task spent standing still (< 5 units/s for >= 0.5 s)
+- **speed (0.3)** — task time from first motion to the task end = the first 复位 frame; only trials that are successful
+  and reached 复位 (a success in which the rule finds no 复位 has no task time)
+- **idle (0.3)** — share of the time from first motion to the task end spent standing still (< 5 units/s for >= 0.5 s);
+  a trial that never reached 复位 runs to its `still` / recorded end
+
+The human reference is measured the same way; a demo episode counts as done when it reaches 复位.
 
 smooth and speed score **1 at or better than the human median, 0.5 at 2x worse, 0 at 4x worse** (each doubling costs
 half). idle = 1 - idle share, truncated like the stage rates. Human demos themselves score about 0.9 (half of them are
@@ -58,7 +66,7 @@ more trials of the top models over finer scoring.
 ## Optional: pick eval trials as training data (very strict, added with the user's OK on 2026-10-23)
 
 Keep only successful trials that are no worse than the human demos on every measure; all must hold:
-1. human label success and all 5 auto stages pass;
+1. human label success and the stage rule saw the trial reach 复位 (`top_stage` 8);
 2. no regrasp: at most 2 gripper closes per arm (not the hold count: one grasp often splits into two holds, in the
    human demos too);
 3. all three quality sub-scores are 1: jitter and task time at or below the human median, no idle time;
@@ -84,11 +92,16 @@ command while it stays closed; release = command opens first. Tape hidden from t
 
 History: before 2026-10-23 trials were scored 0-5 with every stage after the first failure counted as 0, and
 smoothness was reported separately. HF `wwqcleverghost/scores-v4-v5` holds those scores.
+From 2026-10-23 to 2026-11-14 completion used 5 stages judged from the grippers by `score.py` (reach, grasp, no drop,
+handover, place), the task ended when the second arm opened, and a note never changed a score; the last commit with that
+rule is `b9c9af96`. Scores before and after: [`../../notes/scoring_9stage_2026-11-14.md`](../../notes/scoring_9stage_2026-11-14.md).
 
-## Optional: task end of each trial
+## Stages and task end of each episode (`mark_end.py`)
 
-The operator ends a trial by hand, a few seconds early or late. `mark_end.py` writes `<eval dir>/episode_end.csv`
-(episode, end_frame, frames, how) without cutting anything:
+The operator ends a trial by hand, a few seconds early or late. `mark_end.py` writes `<dataset dir>/episode_end.csv`
+(episode, end_frame, frames, how, top_stage) for an eval or a demo dataset, without cutting anything. `top_stage` = the
+highest `fine9` stage any frame is in (the rule alone, no human label). The scores read this file, so run it again after the
+stage rule or a hand-set stage start (`stage_edits.json`) changes.
 
 still = the frame from which every arm joint (command and follower) stays within 3 units of its last pose: the robot has stopped
 and the rest is waiting.
@@ -103,7 +116,7 @@ Other trials:
 - `still`: end = still.
 - `human`: moved until the last 0.5 s; end = the recorded length.
 
-The dataset viewer's "阶段 / 进度" page draws it and greys the rest. Scores do not use it: it is for viewing only (user, 2026-11-05).
+The dataset viewer's "阶段 / 进度" page draws it and greys the rest. Since 2026-11-14 the quality score uses it as the task end.
 
 ```bash
 PYTHONPATH=src python docs/workflows/eval-scoring/mark_end.py ~/.cache/huggingface/lerobot/wwqcleverghost/eval-v8-flow_h16_s8
@@ -112,11 +125,3 @@ PYTHONPATH=src python docs/workflows/eval-scoring/mark_end.py ~/.cache/huggingfa
 2026-11-06 (git 6e1599b9 + uncommitted changes), successful trials: `eval-v6-flow_h16_s8` 28 reset / 3 human, `eval-v8-flow_h16_s8`
 4 reset, the other eval sets all reset except one human in `eval-v6-flow_h16_s8_stagepred`. The human successes are labelled success but fine9
 finds no 复位 in them, so they keep the recorded length (v6 ep26, 32, 38).
-
-## Optional: per-frame stage labels
-
-`score.stage_frames(state, action)` returns one label per frame: 0 reaching, 1 arm A holds, 2 both hold, 3 arm B holds,
-4 placed (B opened after its hold). Boundaries come from the same hold runs as the completion stages; an episode
-without a full handover keeps its last reached label to the end. Checked 2026-10-29 on v4-handover2-trimmed: labels never
-go backwards, and "reached 4" matches the place stage of `score()` on 50/50 episodes (also 50/50 on the v6-flow_h16_s8 eval).
-Not yet written into any dataset; what the labels are for is still open.

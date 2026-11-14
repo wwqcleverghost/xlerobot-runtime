@@ -2,11 +2,10 @@
 
 A = the arm that grasps the tape first, B = the other arm. One causal tracker (StageTracker) detects every event; each event has
 the frame it is confirmed at and its onset (the first frame of the evidence, found by looking back). Rules (--rule; the viewer
-shows fine9 and eval5):
+shows fine9; eval scoring uses fine9 too, docs/workflows/eval-scoring):
   fine9  stages switch when events are confirmed: frame t only uses frames <= t, so the robot computes the same live. Training
          inputs use this. Stages never go down except when the tape is dropped (back to 0); a miss or retry stays put.
   std9   the same events, switched at their onsets: the reference for checking and for training targets. Same order as fine9.
-  eval5  score.stage_frames from eval scoring (5 stages, not causal), for comparison.
 The tracker also uses the tape diameter in the wrist cameras (A对位) and forward kinematics (AB对位: B in A's view).
 
 usage: PYTHONPATH=src python examples/xlerobot/stage_labels.py --dataset v7-handover-clean [--rule fine9] [--episodes 0 1] [--compare]
@@ -278,8 +277,6 @@ def std9(st, ac, size):
 RULES = {  # name -> (stage names, fn(state, action, size) -> per-frame stage index, description, needs wrist-camera sizes)
     "fine9": (STAGES, fine9, "9 阶段，只看过去的帧（机器人运行时也能算，训练输入用它）", True),
     "std9": (STAGES, std9, "9 阶段标准答案：同样的事件，切换在事件起点（核对、训练目标用它）", True),
-    "eval5": (["前往", "A抓着", "两手抓", "B抓着", "已放下"], lambda st, ac, size: score.stage_frames(st[:, :12], ac[:, :12]),
-              "评测打分的 5 阶段，看整段（事后标）", False),
 }
 
 

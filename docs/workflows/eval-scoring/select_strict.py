@@ -1,6 +1,6 @@
 """Very strict pick of eval trials to train on: only trials that are as good as the human demos on every measure.
 A trial is kept only if ALL hold:
-  1. success: human label 1 AND all 5 auto stages (score.py) pass
+  1. success: human label 1 AND the stage rule saw the trial reach 复位 (top_stage 8 in episode_end.csv, mark_end.py)
   2. no regrasp: at most 2 gripper closes per arm (the hold count is not used: it splits one grasp in two often,
      also in the human demos)
   3. report.py quality sub-scores all 1.0: jitter (reversals/s) and task time at or below the human median, no idle
@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from report import trials, quality
+from report import STAGES, trials, quality
 from score import score, runs, GAP
 from ep_score import yellow, closes, HEAD
 
@@ -36,11 +36,11 @@ def check(path, ref):
     for (ep, g), (_, t), (_, q) in zip(d.groupby("episode_index"), df.iterrows(), sub.iterrows()):
         st, ac = np.stack(g["observation.state"].values), np.stack(g["action"].values)
         r = score(st, ac)
-        row = dict(run=os.path.basename(path), ep=ep, human=t.success, stages="".join(map(str, r["stage"])),
+        row = dict(run=os.path.basename(path), ep=ep, human=t.success, top_stage=t.rule_top,
                    holds=r["grasps"], closesL=closes(ac[:, 5]), closesR=closes(ac[:, 11]),
                    smooth=round(q.smooth, 2), speed=round(q.speed, 2), idle_frac=round(t.idle_frac, 3),
                    rev_rate=round(t.rev_rate, 2), task_s=round(t.task_s, 1))
-        row["ok_success"] = bool(t.success and all(r["stage"]))
+        row["ok_success"] = bool(t.success and t.rule_top == len(STAGES) - 1)
         row["ok_grasp"] = row["closesL"] <= 2 and row["closesR"] <= 2
         row["ok_quality"] = bool(q.smooth == 1 and q.speed == 1 and t.idle_frac == 0)
         row["ok_vision"] = False
@@ -74,7 +74,7 @@ if __name__ == "__main__":
     res.to_csv(f"{out}.csv", index=False)
     json.dump(spec, open(f"{out}_spec.json", "w"), indent=2)
     s = res[res.human == 1]
-    print(f"successful trials {len(s)}; + all auto stages {s.ok_success.sum()}, + no regrasp "
+    print(f"successful trials {len(s)}; + rule reached 复位 {s.ok_success.sum()}, + no regrasp "
           f"{(s.ok_success & s.ok_grasp).sum()}, + human-level quality {(s.ok_success & s.ok_grasp & s.ok_quality).sum()}, "
           f"+ placement/midline {s.keep.sum()}")
     print(res[res.keep][["run", "ep", "rev_rate", "task_s", "tape_px_end", "tape_x_start", "first_arm"]].to_string(index=False))
