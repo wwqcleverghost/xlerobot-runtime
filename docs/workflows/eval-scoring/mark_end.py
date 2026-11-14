@@ -28,20 +28,26 @@ import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "../../../examples/xlerobot"))
 from score import FPS, locate  # noqa: E402
-from trim_stagnant_frames import keep_range  # noqa: E402
 
 RESET_TOL = 3.0  # ponytail: one tolerance for all joints (recorded units); raise it if a jittering policy never reads "still"
 RESET = 8  # stage_labels.STAGES.index("复位")
 COLS = ["episode", "end_frame", "frames", "how", "top_stage"]
 
 
+def still_from(st, ac):
+    """First frame from which every arm joint (command and follower) stays within RESET_TOL of its last pose (the tail
+    rule of trim_stagnant_frames.keep_range, +1 frame as there); 0 for a trial that never moved."""
+    p = np.c_[ac[:, :12], st[:, :12]]
+    away = np.flatnonzero(np.abs(p - p[-1]).max(1) >= RESET_TOL)
+    return min(int(away[-1]) + 2, len(p)) if len(away) else 0
+
+
 def task_end(st, ac, reset_start):
     """(end frame, how) of one trial; st / ac: (T, 12) follower state / command; reset_start = first 复位 frame or None."""
     if reset_start is not None:
         return reset_start, "reset"
-    end = keep_range(ac, st, list(range(12)), 0.2, 2.0, RESET_TOL)[1]
+    end = still_from(st, ac)
     if end >= len(st) - FPS // 2:  # still only in the last 0.5 s: the operator stopped it while it moved
         return len(st), "human"
     return end, "still"
@@ -118,6 +124,7 @@ def selfcheck():
     assert reset_start([0, 7, 8, 8, 0, 8]) == 2 and reset_start([0, 1]) is None
     st[:, 0] = np.linspace(0, 50, 100)  # moves to the end
     assert task_end(st, st, None) == (100, "human")
+    assert task_end(np.zeros((100, 12)), np.zeros((100, 12)), None) == (0, "still")  # never moved
 
 
 if __name__ == "__main__":
