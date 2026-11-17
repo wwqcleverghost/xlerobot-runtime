@@ -26,6 +26,12 @@ OPEN, GAP, EMPTY = score.OPEN, score.GAP, 4.0   # command > OPEN = open; stall =
 W = 5                # frames a hold / empty grip / near / in-view must last to be confirmed
 GRIP_MAX = 20.0      # a gripper stalled on the tape reads <= GRIP_MAX (7-12 typically); a wide-open one that has not started
                      # moving yet also looks stalled and steady, but reads ~30
+# Touch: in the current closing the reading stayed > GAP above the command at a tape width (EMPTY..GRIP_MAX) for a run of frames
+# = the jaws stopped on the tape. 抓住 / 抓着 need it (user review of 6 v6 evals, 2026-11-17: a model that closes a few degrees and
+# hovers, closes on nothing or nibbles at the tape failed at 对位 / AB对位, not 抓住). Real A grasps stall for 30+ frames, nibbles
+# 5-11: A needs TOUCH_A. B needs only W: the operator eases B's leader as soon as it holds (v6 / v7 / v8 B grasps stall 5-9
+# frames). Servo lag while closing lasts < W frames.
+TOUCH_A = 15
 DROP = 2.0           # closing starts (onset) when the command falls more than DROP below the peak of this opening
 CLOSING = 5.0        # ... and is confirmed once it is CLOSING below the peak
 SIZE_TH = 0.18       # A对位: apparent tape diameter >= SIZE_TH (fraction of the frame width) with the gripper open
@@ -84,9 +90,12 @@ class StageTracker:
         self.S, self.C, self.D, self.events = [], [], [], []
         self.peak = {"L": 0.0, "R": 0.0}    # command peak of the current opening
         self.close_on = {"L": None, "R": None}   # onset of the current closing (None: not closing)
+        self.srun = {"L": 0, "R": 0}             # frames the gripper has been stalled at a tape width (touch run)
+        self.touch = {"L": 0, "R": 0}            # longest touch run in the current closing (0: not closing / no touch)
         self.hs = self.hc = 0.0             # grip state (tightest so far) / command of the arm holding alone
         self.since = 0                      # last return to 前往 / 对位: only closings that start after it count
         self.a_off = None                   # A let go while B was still closing (the hand-off goes on)
+        self.h_on = {"L": None, "R": None}  # onset of the current steady reading (A抓着 onset when the touch is confirmed later)
 
     # --- detectors: each returns the onset frame when confirmed now, else None ---
     def _last(self, n, ok):
@@ -106,17 +115,17 @@ class StageTracker:
         return None if i is None else max(on, i - W)
 
     def grasp(self, k):     # A: closing AND the tip nearly still, from the later of the two (a close while still moving
-        on = self.closing(k)    # down to align is not a grasp yet)
-        return None if on is None else self.stopped(k, on)
+        on = self.closing(k)    # down to align is not a grasp yet), confirmed once the jaws touch something
+        return None if on is None or self.touch[k] < TOUCH_A else self.stopped(k, on)
 
     def clamp(self, k):     # B: closed onto the tape after its current closing started: held still at a tape width, and the
         on = self.close_on[k]   # reading came down from where it was (a half-open gripper also reads still, v8 ep26 f230)
-        h = self.holding(k) if on is not None else None
+        h = self.holding(k) if on is not None and self.touch[k] >= W else None
         return h if h is not None and h >= on and self.S[self.t][GR[k]] < self.S[on][GR[k]] - GAP else None
 
     def b_grasp(self, k):   # B: a confirmed closing from a real opening (peak >= B_OPEN; not a close-and-reopen from half open,
-        on = self.closing(k)    # v8 ep26 f234 peaked at 11). B is not required to be still: it moves in to meet A
-        return on if on is not None and self.peak[k] >= B_OPEN else None
+        on = self.closing(k)    # v8 ep26 f234 peaked at 11) that touched something. B is not required to be still: it moves in
+        return on if on is not None and self.peak[k] >= B_OPEN and self.touch[k] >= W else None   # to meet A
 
     def holding(self, k):
         """Closed onto the tape: the reading, averaged over W frames (small joint jitter averages out), sits at a tape width and
@@ -183,6 +192,11 @@ class StageTracker:
                     self.close_on[k] = self.t
             elif c >= self.peak[k] - DROP:
                 self.close_on[k] = None     # back up near the peak: not closing after all
+            r = s[GR[k]]
+            self.srun[k] = self.srun[k] + 1 if EMPTY < r <= GRIP_MAX and r - c > GAP else 0
+            self.touch[k] = 0 if self.close_on[k] is None else max(self.touch[k], min(self.srun[k], self.t - self.close_on[k] + 1))
+            h = self.holding(k)
+            self.h_on[k] = None if h is None else h if self.h_on[k] is None else self.h_on[k]
         A, B, g = self.A, self.B, self.stage
         other = lambda k: "R" if k == "L" else "L"
         if g in (0, 1):         # 前往 / 对位: whichever arm grasps first is A
@@ -196,9 +210,9 @@ class StageTracker:
                     self.cand = k
                     self._go(1, self.near(k))
         elif g == 2:            # A closing: holds the tape -> 3 (a miss or reopening stays in 抓住 until it holds)
-            if self.holding(A) is not None:
+            if self.h_on[A] is not None and self.touch[A] >= TOUCH_A:   # a half-closed hover reads steady too: must touch
                 self.hs, self.hc = s[GR[A]], a[GR[A]]
-                self._go(3, self.holding(A))
+                self._go(3, self.h_on[A])
         elif g in (3, 4):       # A holds (3), B in A's view (4); B grasping counts from 3 too (B never seen)
             self.hs = min(self.hs, s[GR[A]])         # A can squeeze tighter after the hold is confirmed
             if self.b_grasp(B) is not None:
@@ -356,7 +370,7 @@ def selfcheck():
         starts = lambda x: [b for b, _, _ in segments(x)]
         assert [g for _, _, g in segments(lab)] == list(range(9)) == [g for _, _, g in segments(ref)], (segments(lab), segments(ref))
         assert starts(ref) == [0, 10, 16, 19, 60, 81, 85, 141, 170], segments(ref)    # command events 1 frame later (frame t
-        assert starts(lab) == [0, 14, 16, 28, 64, 81, 94, 141, 174], segments(lab)    # sees the command of t-1); holds settle
+        assert starts(lab) == [0, 14, 30, 31, 64, 85, 94, 141, 174], segments(lab)    # sees the command of t-1); holds settle
         # LiveStage (eval) gives the training labels frame by frame; tape_size stand-in reads the size from the pixel value
         real_size, globals()["tape_size"] = tape_size, lambda rgb: rgb[0, 0, 0] / 255
         live, prev, out = LiveStage(), None, []
@@ -367,11 +381,17 @@ def selfcheck():
             prev = dict(zip(LiveStage.JOINTS, a[i]))
         globals()["tape_size"] = real_size
         assert out == lab.tolist(), segments(np.array(out))
-        s2, a2 = s.copy(), a.copy()       # L closes on nothing first, reopens and grasps: stays in 抓住, never goes back
+        s2, a2 = s.copy(), a.copy()       # L closes on nothing first (no touch: still 对位), reopens and grasps
         a2[15:20, 5], s2[15:20, 5] = 2, 1
         a2[20:22, 5] = s2[20:22, 5] = 30
         lab2 = fine9(s2, a2, size)
-        assert lab2[19] == 2 and lab2[35] == 3 and (np.diff(lab2) >= 0).all(), segments(lab2)
+        assert lab2[30] == 1 and lab2[38] == 3 and (np.diff(lab2) >= 0).all(), segments(lab2)
+        for cmd, rd, n_touch in ((24, 24, 0), (2, 10, 10)):   # closes a few degrees and hovers / nibbles at the tape for 10
+            s4, a4 = s.copy(), a.copy()                       # frames, then hovers half closed: never past 对位 (R stays shut)
+            a4[:, 11] = s4[:, 11] = 1
+            a4[15:100, 5] = s4[15:100, 5] = cmd if n_touch == 0 else 14
+            a4[15:15 + n_touch, 5], s4[15:15 + n_touch, 5] = cmd, rd
+            assert fine9(s4, a4, size).max() == 1, segments(fine9(s4, a4, size))
         assert compare(ref, ref)[0] == 1.0
         e = apply_edits(lab, {"B抓住": 90})    # later: AB对位 grows to 90; past the run end is clamped to it - 1
         assert starts(e)[5] == 90 and e[89] == 4 and starts(apply_edits(lab, {"B抓住": 500}))[5] == 93
@@ -380,7 +400,7 @@ def selfcheck():
         s3 = s.copy()                     # L still moving down while it starts closing at 16, stops at 17: A抓住 from 17
         s3[:18, 1] = np.linspace(-40, 0, 18)
         r3, f3 = std9(s3, a, size), fine9(s3, a, size)
-        assert r3[16] == 1 and r3[17] == 2 and f3[21] == 1 and f3[22] == 2, (segments(r3), segments(f3))
+        assert r3[16] == 1 and r3[17] == 2 and f3[29] == 1 and f3[30] == 2, (segments(r3), segments(f3))   # fine9: touch
     finally:
         xlerobot_fk.view_angle = real_view
 

@@ -21,8 +21,8 @@ python docs/workflows/eval-scoring/report.py <out_prefix> <human_ref_demo_dir> <
 ## 阶段
 
 打分和显示只用一套阶段：[`../stage-labels/`](../stage-labels/README.zh.md) 的 9 个 `fine9` 阶段，
-A前往、A对位、A抓住、A抓着、AB对位、B抓住、B抓着、B放下、复位（第 0 到第 8 阶段）。逐帧阶段：评测写了 `stages.csv` 就用
-里面的实时规则阶段，否则用腕部视频离线重算 `fine9`。`mark_end.py` 把每条走到的最远阶段（`top_stage`）和任务结束点
+A前往、A对位、A抓住、A抓着、AB对位、B抓住、B抓着、B放下、复位（第 0 到第 8 阶段）。逐帧阶段：用当前规则从腕部视频离线重算 `fine9`
+（2026-11-17 起，写了 `stages.csv` 的评测也重算：那是模型当时看到的、评测当天规则的阶段；2026-11-17 的"碰到"规则见 [`../stage-labels/README.zh.md`](../stage-labels/README.zh.md)）。`mark_end.py` 把每条走到的最远阶段（`top_stage`）和任务结束点
 （复位的第一帧）存进 `episode_end.csv`。
 
 ## 完成度（只有评测有）
@@ -93,7 +93,7 @@ PYTHONPATH=src:docs/workflows/eval-scoring:docs/workflows/handover-dataset-curat
 
 still = 从这一帧起所有手臂关节（指令和从臂）都在最后姿态 3 个单位以内：机器人已经停了，之后是在等人按键。
 
-走到复位的试次（fine9 第 8 阶段：评测有 `stages.csv` 就用实时阶段，否则用腕部视频离线重算）结束点取复位开始（用户 2026-11-06）：
+走到复位的试次（fine9 第 8 阶段，用腕部视频离线重算）结束点取复位开始（用户 2026-11-06）：
 很多试次复位没做完就被结束了，算到复位开始是所有试次都有的一段。
 
 - `reset`：结束 = 复位段第一帧。

@@ -23,8 +23,9 @@ python docs/workflows/eval-scoring/report.py <out_prefix> <human_ref_demo_dir> <
 ## Stages
 
 One set of stages for everything, scoring and display: the 9 `fine9` stages of [`../stage-labels/`](../stage-labels/README.md),
-A前往, A对位, A抓住, A抓着, AB对位, B抓住, B抓着, B放下, 复位 (stage 0 to 8). Per frame they are the live rule stage in the
-eval's `stages.csv` when the eval wrote one, else `fine9` recomputed from the wrist videos. `mark_end.py` stores per episode
+A前往, A对位, A抓住, A抓着, AB对位, B抓住, B抓着, B放下, 复位 (stage 0 to 8). Per frame they are `fine9` recomputed from the wrist
+videos with the current rule (since 2026-11-17 also for evals that wrote `stages.csv`: that is the stage the model saw, under the
+rule of the eval day; the 2026-11-17 touch rule is in [`../stage-labels/README.md`](../stage-labels/README.md)). `mark_end.py` stores per episode
 the furthest stage (`top_stage`) and the task end (the first 复位 frame) in `episode_end.csv`.
 
 ## Completion (evals only)
@@ -106,8 +107,7 @@ stage rule or a hand-set stage start (`stage_edits.json`) changes.
 still = the frame from which every arm joint (command and follower) stays within 3 units of its last pose: the robot has stopped
 and the rest is waiting.
 
-Trials that reached 复位 (fine9 stage 8: the live stage from the eval's `stages.csv`, else recomputed offline from the wrist
-videos) end where 复位 starts (user, 2026-11-06): many were stopped mid-reset, so time up to the reset is what all of them share.
+Trials that reached 复位 (fine9 stage 8, recomputed offline from the wrist videos) end where 复位 starts (user, 2026-11-06): many were stopped mid-reset, so time up to the reset is what all of them share.
 
 - `reset`: end = the first 复位 frame.
 

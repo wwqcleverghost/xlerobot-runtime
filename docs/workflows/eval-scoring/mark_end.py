@@ -1,8 +1,9 @@
 """Per episode of a dataset (eval or demo): where the task really ended and the furthest stage it got to.
 Writes <dir>/episode_end.csv (episode, end_frame, frames, how, top_stage). Nothing is cut. report.py scores with it.
 
-Stages are fine9 (examples/xlerobot/stage_labels.py): the live stage from stages.csv when the eval wrote it, else recomputed
-offline from the wrist videos. top_stage = the highest stage any frame is in (0-8), the rule alone, no human label.
+Stages are fine9 (examples/xlerobot/stage_labels.py), always recomputed offline from the wrist videos with the current rule
+(stages.csv, the stage the model saw live, keeps the rule of the eval day: 2026-11-17 the rule changed, see stage-labels).
+top_stage = the highest stage any frame is in (0-8), the rule alone, no human label.
 
 The operator stops a trial by hand, a few seconds early or late, so the recorded length is not the task's length.
 still = the frame from which every arm joint (command and follower) stays within RESET_TOL of its last pose (the tail rule
@@ -78,18 +79,11 @@ def mark(run, fine9=None, quiet=False):
     base, csv_path = locate(run.rstrip("/"))
     d = pd.concat(pd.read_parquet(f, columns=["episode_index", "action", "observation.state"])
                   for f in sorted(glob.glob(f"{base}/data/*/*.parquet")))
-    log = os.path.join(os.path.dirname(csv_path), "stages.csv") if csv_path else ""
-    log = pd.read_csv(log) if os.path.exists(log) else None
+    fine9 = fine9 or viewer_fine9(base)
     rows = []
     for ep, g in d.groupby("episode_index"):
         st, ac = np.stack(g["observation.state"].values)[:, :12], np.stack(g["action"].values)[:, :12]
-        live = None if log is None else log[log.episode == ep]
-        if live is not None and (live.rule >= 0).any():  # the stage the model saw during the eval
-            lab = np.full(len(st), -1)
-            lab[live.frame.values.clip(0, len(st) - 1)] = live.rule.values
-        else:  # recompute fine9 offline
-            fine9 = fine9 or viewer_fine9(base)
-            lab = np.asarray(fine9(ep))
+        lab = np.asarray(fine9(ep))
         end, how = task_end(st, ac, reset_start(lab))
         rows.append([int(ep), end, len(st), how, int(lab.max())])
     out = end_file(run)

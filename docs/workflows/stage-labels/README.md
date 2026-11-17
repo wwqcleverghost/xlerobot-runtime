@@ -32,16 +32,24 @@ the training labels will not match what eval computes.
 |---|---|---|---|---|
 | 0 | A前往 (A reaches) | start | | the arm moves toward the tape, the tape is still small in its wrist camera |
 | 1 | A对位 (A aligns) | **E0**: tape diameter >= 0.18 (half the grasp-time diameter) in an arm's wrist camera with that gripper **fully open** (reading > 10 and still, change < 1) | first of 5 frames in a row / the 5th | the gripper is open and the tape close, lining up |
-| 2 | A抓住 (A grasps) | **E1**: an arm starts closing **and its tip has nearly stopped** (< 2 cm/s over the last 5 frames **along the gripper axis** (wrist → tip, about the wrist z axis); sliding along the table does not count, e.g. v8 ep32), whichever is later; the first to do so is A. Closing while still moving down to align does not count | the later of the closing onset (more than 2 below the peak of this opening) and the frame the tip stopped / 5 below and still | the tip stops, the gripper closes |
-| 3 | A抓着 (A holds) | **E2**: A holds = the gripper reading averaged over 5 frames sits at a tape width (4–20), changes by < 0.5 within 5 frames (small jitter averages out), and the command is not opening it (command < reading + 2) | the frame the reading settled / the frame it is confirmed (about 9 later) | A holds the tape |
+| 2 | A抓住 (A grasps) | **E1**: an arm starts closing **and its tip has nearly stopped** (< 2 cm/s over the last 5 frames **along the gripper axis** (wrist → tip, about the wrist z axis); sliding along the table does not count, e.g. v8 ep32), whichever is later; the first to do so is A. Closing while still moving down to align does not count. **Confirmed only once the jaws touched the tape for 15 frames** (touch, below) | the later of the closing onset (more than 2 below the peak of this opening) and the frame the tip stopped / touched for 15 frames | the tip stops, the gripper closes |
+| 3 | A抓着 (A holds) | **E2**: A holds = the gripper reading averaged over 5 frames sits at a tape width (4–20), changes by < 0.5 within 5 frames (small jitter averages out), and the command is not opening it (command < reading + 2), **and A touched for 15 frames in this closing** | the frame the reading settled / the frame it is confirmed (about 11 later) | A holds the tape |
 | 4 | AB对位 (B aligns) | **E3**: B enters A's wrist-camera view = angle between B's gripper tip and A's gripper axis (wrist → tip) < 35° | first of 5 frames in a row / the 5th | B shows up in A's wrist camera |
-| 5 | B抓住 (B grasps) | **E4**: B starts closing (the closing of E1, **no stillness required**: B moves in to meet A), after B had opened (command peak >= 15; a close from half open does not count, e.g. v8 ep26 f234 peaked at 11). A letting go while B is closing also counts (the hand-off is under way) | onset of this closing / 5 below the peak | B is closing |
-| 6 | B抓着 (B holds) | **E5**: **B holds** (as E2, with the reading more than 2 below where the closing started). Does not wait for A: A lets go within B抓着 (A lets go = A's command more than 4 above its tightest grip reading and > 10; **loosening a little does not count**) | the frame the reading settled / the frame it is confirmed | B holds the tape, A opens, moving to the drop place |
+| 5 | B抓住 (B grasps) | **E4**: B starts closing (the closing of E1, **no stillness required**: B moves in to meet A), after B had opened (command peak >= 15; a close from half open does not count, e.g. v8 ep26 f234 peaked at 11). **B touched for 5 frames in this closing**. A letting go while B is closing also counts (the hand-off is under way) | onset of this closing / touched for 5 frames | B is closing |
+| 6 | B抓着 (B holds) | **E5**: **B holds** (as E2, with the reading more than 2 below where the closing started, and B touched for 5 frames). Does not wait for A: A lets go within B抓着 (A lets go = A's command more than 4 above its tightest grip reading and > 10; **loosening a little does not count**) | the frame the reading settled / the frame it is confirmed | B holds the tape, A opens, moving to the drop place |
 | 7 | B放下 (B puts down) | **E6**: B lets go (as A letting go, for B) | first frame of the run of commands above (let-go threshold − 2) (an earlier loosening does not count) / the frame it passes the threshold | B releases the tape |
 | 8 | 复位 (reset) | **E7**: after letting go B's arm **heads back to its start pose** = B's joint distance to the start pose (the episode's first frame) falls every frame for 5 frames, by at least 2 (recorded units) in all. Lifting / moving away right after letting go does not count; the gripper is not looked at | first frame of that falling run / the 5th | the arms head back |
 
 Holding tight does not require "command well below the reading": once the tape is held the operator often eases the leader to about the
 reading (~10). A reading <= 4 is closed on nothing, ~30 is a motor that has not started moving; 4–20 excludes both.
+
+**Touch** (2026-11-17): in the current closing, the gripper reading stayed more than 2 above the command at a tape width (4–20) for a run
+of frames: the jaws stopped on the tape. A needs 15 frames (0.5 s), B 5. A half-closed gripper hovering above the tape reads steady at a
+tape width too, but its reading follows the command, so it never touches. Why: the user reviewed 6 v6 evals (first30, progdelta,
+progdelta_rabc, progself, progself_s2head, progself_s2mix35; `_reviewed` in `examples/xlerobot/dataset_labels.json`) and marked a model
+that closes a few degrees and hovers, closes on nothing, or nibbles at the tape as **failed at A对位** (AB对位 for B), not at A抓住. Real A
+grasps stall for 30 frames to over 1000, nibbles for 5–11, so A needs 15. B needs only 5: the operator eases B's leader as soon as it holds,
+and with 10 or 15 some human hand-offs never reached B抓着. Results of that review in "Thresholds and accuracy".
 
 ## Failures (no failure labels; stages only go up)
 
@@ -50,8 +58,10 @@ must pick it up again, or the tape lies on the table while the stage still says 
 
 | Case | Rule | Stage |
 |---|---|---|
-| A misses / reopens halfway and retries | | stays in A抓住 until it holds tight |
-| B misses / retries | | stays in B抓住 until B holds |
+| A closes on nothing / closes a little and hovers / nibbles (touch < 15 frames) | | stays in A对位 (never A抓住) |
+| A touched, then reopens halfway and retries | | stays in A抓住 until it holds tight |
+| B closes without touching | | stays in AB对位 |
+| B touched, then misses / retries | | stays in B抓住 until B holds |
 | A drops it / lets go without a handover | A closed all the way (reading <= 4 for 5 frames), or A lets go before B started closing | back to A前往 (A and B decided again) |
 | dropped during the hand-off | A has let go and B is closed all the way | back to A前往 |
 | B drops it after the handover | B closed all the way | back to A前往 |
@@ -89,6 +99,25 @@ from the joint readings (right-arm base frame, x forward, y left, z up):
   The camera sits above the gripper and looks down at an angle, so this is narrower than its real field of view.
 
 ## Thresholds and accuracy
+
+**2026-11-17, touch rule** (git 2f49b289 + uncommitted changes). Top stage per episode, old rule → new:
+
+| | episodes | top stage changed |
+|---|---|---|
+| human demos v6-handover-curated / v7-handover-clean / v8-handover2-stagelabel | 58 / 53 / 45 | 0 / 0 / 0 |
+| eval successes (all 18 local v6 / v8 evals) | 190 | 1 (stagepred ep20: B抓住 → 复位) |
+| failures in the 6 reviewed evals: matches the user's stage (note, else the rule's stage the user accepted) | 60 | old 32 → new 55 |
+| other eval failures | 70 | 27, all down (mostly A抓住 / A抓着 → A对位; v8 stagelabel T4 复位 → A对位 is right, the tape was never touched) |
+
+Still wrong: progdelta T30, progdelta_rabc T1 / T28, progself T16 (the user: AB对位 failed; B stalled on something for 5+ frames, the
+rule reads B抓住 / B抓着 / 复位) and first30 T19 (A前往 failed, the rule says A对位). The joint readings cannot tell what B is holding.
+
+Human labels: `fine9` frames changed 10% on average (max 45%). A抓住 now starts a median 25 frames later (0.8 s, up to 171: the closing
+before 15 frames of touch is A对位 now), B抓住 12 later; A抓着 2 later; std9 onsets do not move. Some changes fix old errors: in v6 ep48 B
+closed to 16 and reopened (old rule: B抓住 449 and B抓着 477), the real hand-off at 723, which agrees with the hand corrections below.
+`fine9` against `std9` now: frame agreement median 86% (v8) / 88% (v7), enters A抓住 25 / 27 frames late (max 108), A抓着 11, B抓住 12 / 13;
+the other stages as in the table below. The tables below are from 2026-11-03 (before the touch rule).
+Datasets labelled before 2026-11-17 (`*-stagelabel`) carry the old labels: relabel them (`add_stage_labels.py`) before training again.
 
 2026-11-03, git commit 12ec265d + uncommitted changes.
 
