@@ -23,13 +23,16 @@ A page is not a scratchpad: every page has only the slots below; new content goe
 2. **The "说明" (help) button** (right end of the top bar, one per page): the terms, formulas and keys of that page, always a
    "term — definition" list. The text lives in the `HELP` table of `app.js`.
 3. **Panel** = title + one row of facts (`facts()`, e.g. `50 条` `规则阶段 stages.csv`) + content. No remark in brackets or sentence after the title.
-4. **What a column means**: the tooltip of its header (5th element of a `table()` column).
+4. **What a column means**: the tooltip of its header (5th element of a `table()` column), for every column; a header with a tooltip
+   is underlined with dots. Names of numbers in a panel get a tooltip the same way (`.hint`).
+   A hover text is one short line (details go to 说明); every `title` and SVG `<title>` shows in the page's own light tooltip, not the
+   browser's black one.
 5. **States**: the three fixed texts of `state()`: `加载中…`, `未选择数据集`, `没有数据`; errors with `errLine()`, a short red line, the raw exception in its tooltip.
 6. **Warnings and hints**: `status()`, shown in the status slot of the top bar.
 7. **Numbers**: counts as `k/n`; rates with `ciBar`; times as `x.x s`; eval names without the `eval-` prefix (`short()`).
 
 There is one set of stages: the 9 `fine9` stages, names from the server, colours `--s1`…`--s9` (`sv()`). There is one funnel
-(`funnelTable()` / `funnelMini()`); its data is the server's `stages` (passed / entered per stage), the same numbers the score is
+(`funnelMini()`; the eval comparison table uses `funnelPair()`: the same numbers, pass counts on top of the bars, failure shares under them); its data is the server's `stages` (passed / entered per stage), the same numbers the score is
 made of ([`../eval-scoring/`](../eval-scoring/README.md)).
 
 ## Video
@@ -185,18 +188,37 @@ Steps for agents: `.claude/skills/select-high-quality-data/SKILL.md`.
 
 With the rules of [`../eval-scoring/README.md`](../eval-scoring/README.md) (calls `report.py` directly):
 
-- **History table**: every eval, newest version first, by total within a version; success rate (Wilson), completion, quality and total
-  with 95% CI; the stage funnel is 9 small bars (height = share of the trials that entered the stage, hover for `passed/entered`).
-  Click a row for details.
-- **Details**: the 9-stage funnel (per stage `passed/entered`, pass rate with its Wilson interval) and the per-trial table (human label,
+- **Comparison** ("对比", formerly the history table): only the evals chosen in the 数据集 (datasets) picker at the top, newest
+  version first, by total within a version; success (k/n with its Wilson interval), completion, quality and total with 95% CI;
+  the second column, "阶段漏斗" (stage funnel): 9 narrow bars side by side, one per stage. Height = share of all trials that passed the
+  stage, the count on top; under the bar, in red, the share of the trials that got to the stage and failed there
+  (failed / entered %, left out where none failed); the stronger the colour, the higher the stage's pass rate.
+  Hover a bar for the counts and the Wilson interval. Click a row to jump to its details below; add or remove evals in the 数据集 picker.
+- **Details**: one line of scores and the per-trial table (human label,
   failure stage, 9 squares for the stages: solid = passed, red frame = entered and not passed, grey = not reached; smooth / speed / idle,
-  quality, task time). Funnel, failure stage and completion are the same data.
-- Failed trials have a "▶ failure moment" button: playback starts 1.5 s before it, a red dashed line marks it on the curves. The moment is
+  quality, task time). The funnel in the comparison table, failure stage and completion are the same data.
+- **Stage timeline** (a column of the per-trial table): the stage label of every frame of the trial, one time axis for all trials. Label =
+  the rule's stages; for a failure whose note says "<stage>失败", every later stage is cut back to that stage (a hover the rule read as
+  "holding" disappears with it). Black strip below = a gripper really holds something (server `grip_runs`); red frame = the label says
+  A抓着 / AB对位 / B抓住 while A holds nothing, or B抓着 while B holds nothing (>= 0.5 s, +-0.5 s slack). Hover for the stage and its
+  seconds; click to play from there.
+- **Filter** (toolbar, per-trial tables only, remembered in the browser): 试次 (trials) = all / success / failure; 备注 (note) =
+  all / with / without. For trials whose human label and the rule disagree, use the "标签≠规则" (label ≠ rule)
+  filter of the stage page. When some are hidden the panel title shows "筛出 k/n"; A / D in the large view moves only through the shown trials.
+  Use it to go through the failure stages one by one, add notes, or find mistyped y/n labels.
+- Failed trials have a "▶ failure moment" button: playback starts 1.5 s before it, a red dashed line marks it on the curves. The large
+  view's title gives the failure type: the stage it failed at, and in brackets where that comes from (note / rule).
+- **Failure stage without typing**: the large view of a failed trial has a row of 9 stage buttons. A click (or key 1-9) writes
+  "<stage>失败" at the start of the note, replacing an earlier failure stage there and keeping the rest of the note; "按规则" (key 0)
+  removes it, back to the rule. The score is recomputed.
+- **Reviewed**: the "标记为已审阅" (mark as reviewed) button at the right of a detail title. Once clicked, the comparison table shows
+  "已审阅" after the eval's name (hover for the date) its detail panel turns light grey with a thin green left edge, and its comparison row gets the green edge too; click again to undo. Stored as `_reviewed: {"at": "date"}` under the eval in
+  `dataset_labels.json`; it does not change any score. The moment is
   approximate: 0.5 s before the last grasp ended (tape dropped or released); 3 s before the end when the tape was never held.
 - **Failure stage from the note**: when the note of a failed trial says "<stage>失败" (e.g. `AB对位失败`, `B抓住失败`), the trial counts as
-  having got to that stage without passing it; without such a note it is the furthest stage the rule read (the "失败阶段" column says
-  "备注" or "规则"). The rule reads a gripper closing on nothing as a later stage, so what a person saw wins.
-  Since 2026-11-14 the note **counts in completion**: after a note changes, that eval is scored again (the page refreshes about 1 s later).
+  having got to that stage without passing it; without such a note it is the furthest stage the rule read (in the "失败阶段" column a stage from a
+  note carries a grey *, one without * is the rule's). The rule reads a gripper closing on nothing as a later stage, so what a person saw wins.
+  Since 2026-11-14 the note **counts in completion**: after a note changes, that eval is scored again: about 1 s later only its scores, funnel and trial rows update, in place (no redraw, no jump).
   With a note, the failure moment is no later than 0.5 s before the first return to an earlier stage after that stage (a retry at the very
   end is not the failure moment).
 
@@ -225,11 +247,20 @@ Below, one row per trial, all rows on one time axis (gridline every 5 s), so len
 - Plot 0..1: black = progress of the rule stage, blue = the model's progress (`*-progpred`: its own output; others: from its stages).
   Progress per stage uses the fixed v6 shares `stage_labels.PROG_SHARES`.
 - Marks on the bottom edge of the plot (filled = model, hollow = rule): red ▼ = the stage goes down (back), orange ▲ = a stage is
-  skipped, or the predicted progress steps by > 0.1 in one frame; counts next to the trial (▼n ▲n), and the model's ▼ total in the panel header.
+  skipped, or the predicted progress steps by > 0.1 in one frame; a stage run shorter than 10 frames (1/3 s) is edge flicker, merged
+  into the run before it, not a back or skip; counts next to the trial (▼n ▲n), and the model's ▼ total in the panel header.
 - Dashed line = the task end (always inside 复位 when the trial got there), grey after it (nothing is cut): `episode_end.csv` from
   [`../eval-scoring/mark_end.py`](../eval-scoring/README.md); without it, computed on the fly from `stages.csv`, else not shown (run
   mark_end.py: it recomputes fine9 from the videos). The label shows end / recorded seconds.
 - Hover: time, both stages, probability / progress. Click: the trial's player and joint curves from that moment, greyed after the end.
+- The thin strip between the two bands = **holding**: a gripper really holds something (commanded at least 2 below a reading of
+  4-20 for >= 0.5 s; server `grip_runs`), independent of the stage rule. Dark = A (holds first), light = B.
+- **Red frame** = this part of a band contradicts the grippers (>= 0.5 s, +-0.5 s slack): A抓着 / AB对位 / B抓住 need A holding, B抓着
+  needs B holding. Top band = rule, lower band = model. Most common: the rule reads a half-closed gripper hovering over the tape as
+  A抓着 (checked 2026-11-17, see `outputs/label_stage_check_20261117/`).
+- **Filter** (toolbar "试次", remembered in the browser): label ≠ rule (labelled success without reaching 复位, or failure that reached it),
+  rule ≠ gripper, model ≠ gripper (has a red frame), model ≠ rule (per-frame agreement before the end < 80 %), back to the start
+  (after 3 s, from A抓着…B放下 back to A前往 / A对位). The panel title shows "筛出 k/n".
 
 `stages.csv` (episode, frame, rule, pred, prob, progress; -1 / empty = none) is written next to `success.csv` by
 `lerobot_record_eval.py` for every saved trial of a model with a stage input or output (not by `eval_remote_trials.py` yet).

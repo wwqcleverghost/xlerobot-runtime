@@ -49,6 +49,7 @@ HOME = Path(os.path.expanduser("~/.cache/huggingface/lerobot"))
 OWNER = HOME / "wwqcleverghost"
 SPECS = REPO / "examples/xlerobot"
 LABELS = SPECS / "dataset_labels.json"
+REVIEWED = "_reviewed"  # dataset-level entry of dataset_labels.json: {"at": "YYYY-MM-DD"} once its eval labels were checked (eval page)
 OUT = REPO / "outputs/dataset_viewer"
 REF = "v4-handover2-trimmed"  # human reference demos for the quality score (eval-scoring README)
 PYTHON = sys.executable
@@ -253,6 +254,12 @@ def ends_of(ds_id):
     return o["ends"][1]
 
 
+def grip_runs(st, ac):
+    """[[start, end, "L" / "R"]] where a gripper holds something (>= 0.5 s): commanded closed below a stalled reading that is
+    neither empty (> 4) nor wide open (< 20). Independent of the stage rule, to check stages against (stage page)."""
+    return [[int(s), int(e), k] for k, g in GR.items() for s, e in runs((ac[:, g] < st[:, g] - 2.0) & (st[:, g] > 4) & (st[:, g] < 20))]
+
+
 def stage_view(ds_id, src="live"):
     """Per episode of an eval: the task end (episode_end.csv of eval-scoring/mark_end.py; without it, computed here from the
     live stage of stages.csv, else None: mark_end.py recomputes fine9 from the videos, too slow for this request)
@@ -268,7 +275,8 @@ def stage_view(ds_id, src="live"):
     for ep in o["eps"].index:
         a, st = ep_arrays(o, ep)
         n, ok = len(a), bool((o["success"] or {}).get(int(ep), 0))
-        e = dict(ep=int(ep), n=n, success=ok, end=None, how=None, marked=False, live=None, pred=None, prob=None, progress=None)
+        e = dict(ep=int(ep), n=n, success=ok, end=None, how=None, marked=False, live=None, pred=None, prob=None, progress=None,
+                 grip=grip_runs(st, a))
         g = None if log is None else log[log.episode == ep]
         rule = None
         if g is not None and len(g):
@@ -674,8 +682,9 @@ def _evaluation(ds_id):
     trials = []
     for _, r in df.iterrows():
         a, st = ep_arrays(o, int(r.ep))
-        # top = the stage the trial got to (entered, not passed; 8 with success = all passed); top_by = label / note / rule
-        trials.append(dict(ep=int(r.ep), label=int(o["success"].get(int(r.ep), 0)), top=int(r.top), top_by=r.top_by,
+        # top = the stage the trial got to (entered, not passed; 8 with success = all passed); top_by = label / note / rule;
+        # rule_top = the furthest stage the rule alone saw (episode_end.csv), to check the y/n label against
+        trials.append(dict(ep=int(r.ep), label=int(o["success"].get(int(r.ep), 0)), top=int(r.top), top_by=r.top_by, rule_top=int(r.rule_top),
                            success=int(r.success), q=r.q, q_smooth=r.q_smooth, q_speed=r.q_speed, q_idle=r.q_idle,
                            task_s=r.task_s, rev_rate=r.rev_rate, idle_frac=r.idle_frac, n=len(a),
                            fail=None if r.success else fail_time(st, a, o["fps"])))
@@ -693,7 +702,7 @@ CODE = [REPO / f for f in ("docs/workflows/eval-scoring/report.py", "docs/workfl
                            "src/lerobot/scripts/lerobot_dataset_quality.py")]
 CURATE_CODE = CODE + [REPO / f for f in ("docs/workflows/dataset-viewer/curate.py", "docs/workflows/handover-dataset-curation/review_page.py",
                                           "docs/workflows/handover-dataset-curation/ep_score.py")]
-SCORE_VERSION = 2  # bump when _quality / _evaluation change what they return. 2 (2026-11-14): 9 fine9 stages for everything
+SCORE_VERSION = 3  # bump when _quality / _evaluation change what they return. 2 (2026-11-14): 9 fine9 stages for everything; 3: rule_top per trial
 score_lock = threading.Lock()  # report.rng is global: one scoring at a time
 _failed = {}
 
@@ -793,7 +802,8 @@ def quality(ds_id):
 
 
 def evaluation(ds_id):
-    return with_labels(ds_id, cached("eval", ds_id), "trials")
+    v = with_labels(ds_id, cached("eval", ds_id), "trials")
+    return dict(v, reviewed=read_json(LABELS, {}).get(ds_id, {}).get(REVIEWED, {}).get("at"))
 
 
 def version(ds_id):
@@ -831,6 +841,9 @@ def history(kind):
             if not (_worker["thread"] and _worker["thread"].is_alive()):
                 _worker["thread"] = threading.Thread(target=fill, daemon=True)
                 _worker["thread"].start()
+    labels = read_json(LABELS, {})
+    for r in rows:
+        r["reviewed"] = labels.get(r["id"], {}).get(REVIEWED, {}).get("at")
     return dict(kind=kind, rows=rows, pending=pending)
 
 
@@ -994,7 +1007,9 @@ class Handler(BaseHTTPRequestHandler):
         """A dataset's own mp4 with HTTP Range (the browser seeks with it; raw recordings keep the moov at the end)."""
         try:
             root = root_of(q["id"])
-            p = (root / q["p"]).resolve()
+            # inside the dataset by its path ("..", absolute paths refused), not by where symlinks point: a dataset may
+            # link its videos/ to another one (eval-v6-flow_h16_s8_first30 -> eval-v6-flow_h16_s8)
+            p = Path(os.path.normpath(root / q["p"]))
             assert p.is_relative_to(root) and p.suffix == ".mp4"
             size = p.stat().st_size
         except Exception:

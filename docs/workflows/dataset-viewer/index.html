@@ -23,7 +23,7 @@ a{color:var(--h)} .mute{color:var(--mute)} .err{color:var(--bad)}
 .legend span{display:inline-flex;align-items:center;gap:4px;margin-right:8px;color:var(--mute)} .legend i{display:inline-block;width:14px;height:8px;border-radius:2px}
 main{padding:12px 16px}
 /* dataset picker */
-.picker{position:relative;max-width:100%} .picker>button{max-width:min(520px,100%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.picker{position:relative;flex:0 0 auto;width:min(420px,100%)} .picker>button{width:100%;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}  /* fixed width: picking datasets does not move the button or its list */
 .pop{position:absolute;top:30px;left:0;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #0003;
   width:520px;max-width:92vw;max-height:70vh;overflow:auto;padding:8px}
 .pop>input{width:100%;margin-bottom:6px} .pop .row{display:flex;gap:8px;align-items:center;padding:2px 4px;border-radius:4px;cursor:pointer}
@@ -80,8 +80,16 @@ th,td{padding:3px 8px;border-bottom:1px solid var(--line);text-align:right;white
 td:first-child,th:first-child{text-align:left} .models td,.models th{text-align:left;vertical-align:top} .models td:nth-child(2){white-space:normal;min-width:260px}
 tr.click{cursor:pointer} tr.click:hover td{background:var(--soft)}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px;overflow:auto}
+/* left-aligned cells whose colour squares line up (eval page) */
+.lc{text-align:left} th[data-k="top"],th[data-k="tl"],th[data-k="stages"]{text-align:left}
+/* a name with a hover explanation */
+th[title]:not([title=""]),th[data-tip],.hint{text-decoration:underline dotted var(--mute);text-underline-offset:3px} .hint{cursor:help}
+/* the eval comparison table: tighter; the funnel header sits over its bars */
+#hist th,#hist td{padding:3px 5px} #hist th[data-k="funnel"]{text-align:left}
+/* an eval whose labels were reviewed on the eval page (dataset_labels.json _reviewed): grey "done" panel with a green edge, green edge on its history row */
+.panel.reviewed{background:var(--soft);box-shadow:inset 4px 0 0 var(--ok)} .panel.reviewed table,.panel.reviewed th{background:transparent} tr.reviewed td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
 .panel h3{margin:0 0 6px;font-size:14px} svg text{fill:var(--ink)}
-.tip{position:fixed;z-index:50;background:var(--ink);color:var(--bg);padding:3px 8px;border-radius:5px;font-size:12px;pointer-events:none;white-space:pre}
+.tip{position:fixed;z-index:50;background:var(--card);color:var(--ink);border:1px solid var(--line);box-shadow:0 2px 8px #0002;padding:3px 8px;border-radius:6px;font-size:12px;pointer-events:none;white-space:pre-line;max-width:260px}
 .ci .ax{stroke:var(--line)} .ci .w{stroke:var(--ink);stroke-width:2} .ci .d{fill:var(--h);stroke:var(--card);stroke-width:1.5} .ci{vertical-align:-2px}
 .nm{display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom} tr.selrow td{background:var(--soft);font-weight:600} .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .rk .grid{stroke:var(--line)} .rk .axt{fill:var(--mute);font-size:11px} .rk .lbl{fill:var(--ink);font-size:11px} .rk .pt{stroke:var(--card);stroke-width:1.5}
@@ -120,8 +128,8 @@ dialog::backdrop{background:#0007} dialog .player{width:min(440px,100%)} dialog>
   <div class="bar1">
     <nav class="tabs"><span class="grp">数据集</span><a href="#review">裁剪审阅</a><a href="#batch">批量播放</a><a href="#quality">训练集质量 / 筛选</a><span class="grp">模型</span><a href="#models">模型总表</a><span class="grp">评测</span><a href="#eval">测试集打分</a><a href="#stage">阶段 / 进度</a></nav>
     <label title="所有视频的播放速度（快捷键 &lt; &gt;）">速度 <select id="rate"></select></label>
-    <label title="自动阶段标签（examples/xlerobot/stage_labels.py），画在关节曲线上方">阶段 <select id="stage"></select></label>
-    <label title="在阶段条上拖动边界把手改阶段起点（只对 fine9），双击把手恢复自动；保存在 examples/xlerobot/stage_edits.json，add_stage_labels.py 写标签时套用"><input type="checkbox" id="stageEdit">改阶段</label>
+    <label title="自动阶段标签，画在关节曲线上方">阶段 <select id="stage"></select></label>
+    <label title="拖动阶段条把手改起点，双击恢复自动"><input type="checkbox" id="stageEdit">改阶段</label>
     <div class="picker" id="picker"></div>
     <span id="info"></span>
     <span id="status"></span>
