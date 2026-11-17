@@ -191,6 +191,14 @@ PYTHONPATH=src python examples/xlerobot/add_stage_labels.py --dataset v8-handove
 2026-11-03：`v8-handover2`（45 条，23328 帧，本地构建，未上传 HF）→ `v8-handover2-stagelabel`，当天按本文的规则重新计算过（最后一次：对位要求夹爪张开到位、复位改为 B 的手臂朝初始姿势回收、视野放宽到 35°、A抓住 要求末端静止、B抓着 从 B 夹住开始、夹住用 5 帧平均判断之后）。
 各阶段帧数：A前往 3813、A对位 3352、A抓住 1447、A抓着 3539、AB对位 2276、B抓住 1274、B抓着 2304、B放下 1572、复位 3751。
 
+2026-11-17：两个都按"碰到"规则重新加了标签（git a3392830；备份在 `_trash_20261117/`）。各阶段帧数：
+- `v8-handover2-stagelabel`（45 条，23328 帧）：A前往 3816、A对位 4806、A抓住 80、A抓着 3449、AB对位 2821、B抓住 744、B抓着 2289、
+  B放下 1572、复位 3751。
+- `v6-handover-curated-stagelabel`（58 条，34209 帧；本地，不在 HF）：A前往 5214、A对位 6075、A抓住 105、A抓着 4267、AB对位 5400、
+  B抓住 1020、B抓着 3241、B放下 2363、复位 6524。
+`fine9` 里 A抓住 几乎没有了（每条 1–2 帧）：A 碰到满 15 帧时读数通常已经稳定，A抓着 紧接着就确认。在那之前的合拢现在算 A对位。
+`std9` 里 A抓住 还在（起点不变）。
+
 ## 训练加权（RA-BC）
 
 阶段这一列除了当输入，也可以用来给训练加权：SARM 论文（arXiv 2509.25358）的 Reward-Aligned Behavior Cloning（`src/lerobot/utils/rabc.py`）。

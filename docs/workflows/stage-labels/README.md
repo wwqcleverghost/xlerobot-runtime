@@ -211,6 +211,14 @@ PYTHONPATH=src python examples/xlerobot/add_stage_labels.py --dataset v8-handove
 the rules in this document (last after 对位 required a fully open gripper and 复位 became B's arm heading back to its start pose, the view widened to 35°, A抓住 required a still tip and B抓着 started at B's hold, judged on a 5-frame average). Frames per stage: A前往 3813, A对位 3352, A抓住 1447, A抓着 3539, AB对位 2276, B抓住 1274, B抓着 2304,
 B放下 1572, 复位 3751.
 
+2026-11-17: both relabelled with the touch rule (git a3392830; backups in `_trash_20261117/`). Frames per stage:
+- `v8-handover2-stagelabel` (45 episodes, 23328 frames): A前往 3816, A对位 4806, A抓住 80, A抓着 3449, AB对位 2821, B抓住 744, B抓着 2289,
+  B放下 1572, 复位 3751.
+- `v6-handover-curated-stagelabel` (58 episodes, 34209 frames; local, not on HF): A前往 5214, A对位 6075, A抓住 105, A抓着 4267,
+  AB对位 5400, B抓住 1020, B抓着 3241, B放下 2363, 复位 6524.
+A抓住 is almost gone from `fine9` (1–2 frames per episode): by the time A has touched for 15 frames the reading has settled, so A抓着 is
+confirmed right after. The closing before that now counts as A对位. `std9` keeps A抓住 (onsets do not move).
+
 ## Training weights (RA-BC)
 
 The stage column can also weight training instead of (or besides) being an input: Reward-Aligned Behavior Cloning from SARM
