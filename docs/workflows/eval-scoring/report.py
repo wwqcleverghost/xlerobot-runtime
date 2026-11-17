@@ -47,7 +47,7 @@ def notes(name):
 
 def note_stage(note):
     """Index of the stage a note names as the failure ("AB对位失败"), the longest name that fits; -1 when it names none."""
-    hit = [g for g, name in enumerate(STAGES) if name + "失败" in (note or "")]
+    hit = [g for g, name in enumerate(STAGES) if name + "失败" in (note or "").upper()]  # "a对位失败" counts too
     return max(hit, key=lambda g: len(STAGES[g]), default=-1)
 
 
@@ -194,7 +194,7 @@ def plot(res, out):
 
 
 def selfcheck():
-    assert len(STAGES) == 9 and note_stage("AB对位失败，没接住") == 4 and note_stage("A对位失败") == 1 and note_stage("夹爪抖") == -1
+    assert len(STAGES) == 9 and note_stage("AB对位失败，没接住") == 4 and note_stage("A对位失败") == 1 and note_stage("a对位失败") == 1 and note_stage("夹爪抖") == -1
     assert stage_marks(3, True) == ([1] * 9, "label")
     assert stage_marks(3, False) == ([1, 1, 1, 0, 0, 0, 0, 0, 0], "rule")  # entered stage 3 (A抓着), did not pass it
     assert stage_marks(8, False, "B抓住失败") == ([1] * 5 + [0] * 4, "note")  # the note wins over the rule

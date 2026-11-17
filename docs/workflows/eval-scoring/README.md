@@ -33,7 +33,7 @@ the furthest stage (`top_stage`) and the task end (the first 复位 frame) in `e
 - A trial **entered** a stage when its furthest stage is that one or a later one, and **passed** it when it entered the next
   one. The last stage (复位) is passed when the human label says success.
 - **The human judgement is final** (no video review needed): label success -> all 9 stages pass. Label fail and the
-  trial's note in the dataset viewer names a stage (`AB对位失败`: a stage name followed by 失败) -> the trial got to that
+  trial's note in the dataset viewer names a stage (`AB对位失败`: a stage name followed by 失败; lower-case a / b count too) -> the trial got to that
   stage and did not pass it. Label fail without such a note -> the furthest stage the rule saw. The rule reads a gripper
   closing on nothing as a later stage, so a failed trial without a note can be credited with too much: write the note.
 - **Stage pass rate = (passed + 1) / (entered + 2)**. A trial that never entered a stage does not count against it.
