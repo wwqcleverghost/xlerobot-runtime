@@ -66,13 +66,16 @@ def toward_start(j, st, start):
 @torch.inference_mode()
 def run(pol, pre, post, items, cmd, w, noise):
     """joints (F, N, 8, 12) and progress gain (F, N) for indicator cmd (None: no adv) and guidance w, fixed noise (F*N, H, D)."""
-    from lerobot.utils.constants import OBS_IMAGES, OBS_STATE
+    from lerobot.utils.constants import OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
     keys = list(pol.config.image_features)
     raw = {k: torch.stack([it[k] for it in items]).repeat_interleave(N, 0) for k in [OBS_STATE, *keys]}
     raw = {k: (v.float() / 255 if v.dtype == torch.uint8 else v).to("cuda") for k, v in raw.items()}
     p = pre(raw)
     b = {OBS_STATE: p[OBS_STATE], OBS_IMAGES: torch.stack([p[k] for k in keys], -4)}
+    if pol.config.env_state_feature is not None:  # v6 progress models: the label progress v as their memory s
+        v = torch.tensor([float(it["v"]) for it in items], device="cuda").repeat_interleave(N)
+        b[OBS_ENV_STATE] = pol.diffusion.cumulative(v, 9)[:, None].expand(-1, 2, -1)
     if cmd is not None:
         pol.diffusion.adv_command, pol.config.adv_guidance = cmd, w
     with torch.autocast("cuda"):
@@ -162,7 +165,8 @@ def main(args):
             sets[ds] = (d, d.meta.episodes["dataset_from_index"])
         d, lo = sets[ds]
         it = d[int(lo[ep]) + f]
-        items.append({k: (it[k] * 255).round().to(torch.uint8) if k in offline_v9.CAMS else it[k] for k in [OBS_STATE, *offline_v9.CAMS]})
+        items.append({**{k: (it[k] * 255).round().to(torch.uint8) if k in offline_v9.CAMS else it[k] for k in [OBS_STATE, *offline_v9.CAMS]},
+                      "v": float(lab[f"{ds}|{ep}|v"][f])})
         start.append(d.hf_dataset[int(lo[ep])][OBS_STATE].numpy())
     start = np.stack(start)
     print(f"{len(items)} stuck frames from {len({(d, e) for d, e, _ in picks})} held-out failed trials", flush=True)
