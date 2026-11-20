@@ -127,7 +127,18 @@ first the best v9 model at its best w against `v6-flow_h16_s8`, then with `STALL
 
 ## Results
 
-Offline and robot results are added here as they come in.
+Reference (v6 models, 2026-11-20, held-out stall frames: 128 frames of 16 failed held-out trials, 16 samples each; `gate_v9.py`,
+`offline_v9.py`):
+
+| Model | close share | noise between seeds (deg) | moves toward start | G5 corr (gain, gripper) | best-of-16 close | progress error (stages) | gain AUC |
+|---|---|---|---|---|---|---|---|
+| `v6-flow_h16_s8` | 0.115 | 0.31 | 0.41 | — | — | — | — |
+| `v6-flow_h16_s8_progdelta` | 0.065 | 0.36 | 0.34 | −0.006 (fails) | 0.086 | 0.28 | 0.69 |
+| `v6-flow_h16_s8_progself` | 0.070 (offline_v9) | | | | 0.094 | 0.30 | 0.65 |
+
+The progdelta coupling between its progress dims and closing (corr −0.36 on its own eval's stalls) does not hold on these held-out
+stalls (−0.006): best-of-N with the v6 models is not expected to help much. G1 needs an indicator effect of about 3 × 0.3 ≈ 1 deg.
+v9 gate results follow at the 20K / 60K / 140K checkpoints.
 
 ## Related work
 
