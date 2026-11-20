@@ -211,6 +211,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
+    # An episode subset (--dataset.episodes) is loaded whole and only its episodes are sampled (EpisodeAwareSampler below):
+    # a v3 LeRobotDataset built with `episodes` indexes its rows by global frame index and fails past its own size
+    # (IndexError on v9-handover-curated-rollouts, 2026-11-20). The config keeps the subset, so a resume does the same.
+    subset = cfg.dataset.episodes
+    cfg.dataset.episodes = None
     # Dataset loading synchronization: main process downloads first to avoid race conditions
     if is_main_process:
         logging.info("Creating dataset")
@@ -221,6 +226,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     # Now all other processes can safely load the dataset
     if not is_main_process:
         dataset = make_dataset(cfg)
+    cfg.dataset.episodes = subset
+    if subset is not None:
+        logging.info(f"Training on {len(subset)} of {dataset.meta.total_episodes} episodes (--dataset.episodes)")
 
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
@@ -346,13 +354,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # create dataloader for offline training
-    if hasattr(cfg.policy, "drop_n_last_frames"):
+    if hasattr(cfg.policy, "drop_n_last_frames") or subset is not None:
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
             dataset.meta.episodes["dataset_to_index"],
-            episode_indices_to_use=dataset.episodes,
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
+            episode_indices_to_use=subset,
+            drop_n_last_frames=getattr(cfg.policy, "drop_n_last_frames", 0),
             shuffle=True,
         )
     else:
