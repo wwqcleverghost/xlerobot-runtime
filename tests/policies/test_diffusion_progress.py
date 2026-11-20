@@ -182,3 +182,17 @@ def test_stall_guard_learned():
     assert fired == 9 and g.back_left == 15
     cmds = [g.command() for _ in range(20)]
     assert cmds == [2] * 15 + [0] * 5
+
+
+def test_stall_guard_ask():
+    """STALL=ask fires like the others but queues nothing and keeps the indicator at good."""
+    import numpy as np
+
+    from lerobot.scripts.lerobot_record_eval import StallGuard
+
+    g = StallGuard("ask:1", 10)
+    hits = []
+    for t in range(15):  # (the next trigger could come 10 frames later, at most STALL_MAX times)
+        g.observe(np.zeros(12), {"j": 0.0}, float("nan"))
+        hits.append(g.check(t))
+    assert hits.index(True) == 9 and g.queue == [] and g.command() == 0 and g.log == [(9, "ask")]

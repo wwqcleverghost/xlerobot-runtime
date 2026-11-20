@@ -720,13 +720,15 @@ class StallGuard:
       rewind    first drive back along the commands sent before the stall began, STALL_REWIND_S (1.5) seconds of them in
                 reverse (back the way the arm came), then replan: retreat and re-align (Rewind-IL, arXiv 2604.16683);
       learned   (adv_back models) plan with the indicator "back" for STALL_REWIND_S seconds, then with "good" again: the
-                model's own learned retreat (reversed approaches in training).
+                model's own learned retreat (reversed approaches in training);
+      ask       ring and ask the operator to take over (Space, with --takeover=true): the robot asks for help when it is stuck
+                (ThriftyDAgger-style), so the recoveries the training data lacks get recorded (interventions.csv).
     At most STALL_MAX (3) times per trial, the next one at least <seconds> after the last. Each trigger is listed in
     stalls.csv (episode, frame, mode); rewind frames are recorded like policy frames."""
 
     def __init__(self, spec: str, fps: int):
         mode, sec = spec.split(":")
-        assert mode in ("resample", "rewind", "learned"), f"STALL mode must be resample, rewind or learned, got {mode}"
+        assert mode in ("resample", "rewind", "learned", "ask"), f"STALL mode must be resample, rewind, learned or ask, got {mode}"
         self.mode, self.n, self.fps = mode, max(2, int(float(sec) * fps)), fps
         self.box = float(os.environ.get("STALL_BOX", 3.0))
         self.back = int(float(os.environ.get("STALL_REWIND_S", 1.5)) * fps)
@@ -767,6 +769,8 @@ class StallGuard:
         self.last = t
         self.log.append((frame, self.mode))
         print(f"[stall] frame {frame}: {self.mode}" + (f", {len(self.queue)} frames back" if self.queue else ""), flush=True)
+        if self.mode == "ask":
+            print("\a[stall] STUCK: press Space to take over with the leader arm, Space again to hand back", flush=True)
         return True
 
 
