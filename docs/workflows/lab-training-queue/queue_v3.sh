@@ -163,6 +163,8 @@ open(d + "/REVISION", "w").write(rev + "\n")' wwqcleverghost/$data $d || { echo 
   [ $job = flow:v6rabc ] && [ -z "$DRY" ] && { $PY examples/xlerobot/stage_progress.py --root $d || continue; }
   # v9 subsets: episodes_<eps>.json of the training set (build_v9.py)
   [ -n "$eps" ] && policy+=("--dataset.episodes=$(tr -d ' \n' < $d/episodes_$eps.json 2>/dev/null || echo MISSING)")
+  # v9 RA-BC on the user's time-decayed progress (build_v9.py --decay): standing still loses progress
+  [ $job = flow:v9rabc ] && policy+=("--rabc_progress_path=$d/sarm_progress_decay.parquet")
   cmd=($PY -m lerobot.scripts.lerobot_train
     --dataset.repo_id=wwqcleverghost/$data --dataset.root=$d
     --dataset.image_transforms.enable=true --dataset.image_transforms.on_gpu=true

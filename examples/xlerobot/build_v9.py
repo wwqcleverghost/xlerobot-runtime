@@ -57,6 +57,8 @@ H = 30       # look-ahead frames of the gain (1 s at 30 fps; evals really run ~2
 Q = 0.3      # eps = this quantile of the demos' gain per stage
 EPS_MIN = 0.02
 CAP, TAIL = 150, 15
+DECAY_K = 0.3  # time-decay progress: stages lost per second the arms stand still (after the first second)
+BOX, BOX_S = 3.0, 1.0  # "standing still" = every joint within a 3 deg box over the last second (StallGuard's test)
 BACK_LAG = 8  # frames (~250 ms servo lag at 30 fps, memory servo-tracking-lag)
 BACK_MIN = 30  # shortest approach worth reversing
 
@@ -372,7 +374,40 @@ def finish(raw=RAW, final=FINAL, back=False):
           f"neg {fl.neg.mean():.2f}; demo eps {int(per.demo.sum())}, successful eps {int(per.success.sum())}")
 
 
+def still_time(st, fps=30, box=BOX, win_s=BOX_S):
+    """seconds the arms have been standing still at each frame: 0 until every joint stayed inside a `box` deg box for
+    `win_s`, then counting up (the same test as the eval's StallGuard, so it is computable live)."""
+    w = int(win_s * fps)
+    still = np.r_[np.zeros(min(w, len(st)), bool), np.array([np.ptp(st[k - w:k + 1], 0).max() < box for k in range(w, len(st))], bool)]
+    run, out = 0, np.zeros(len(st))
+    for k, s in enumerate(still):
+        run = run + 1 if s else 0
+        out[k] = run / fps
+    return out
+
+
+def write_decay(name):
+    """sarm_progress_decay.parquet of a finished set: the user's time-decayed progress v - DECAY_K * still_time (>= 0), / 9,
+    for RA-BC (queue job flow:v9rabc): a stall is not just flat but losing progress."""
+    root = lerobot_home() / name
+    fl = pd.read_parquet(root / "frame_labels.parquet")
+    df = pd.concat(pd.read_parquet(f, columns=["index", "episode_index", "observation.state"])
+                   for f in sorted(root.glob("data/*/*.parquet"))).set_index("index").loc[fl["index"]]
+    tau = np.zeros(len(fl))
+    for e in fl.episode_index.unique():
+        m = (fl.episode_index == e).to_numpy()
+        tau[m] = still_time(np.stack(df["observation.state"].to_numpy()[m]))
+    vd = np.maximum(fl.v.to_numpy() - DECAY_K * tau, 0.0)
+    pd.DataFrame(dict(index=fl["index"], episode_index=fl.episode_index, progress_sparse=vd / 9, still_s=tau)).to_parquet(
+        root / "sarm_progress_decay.parquet", index=False)
+    print(f"{name}: decay progress written; frames standing still {np.mean(tau > 0):.3f}, mean drop {np.mean(fl.v - vd):.3f} stages")
+
+
 def selfcheck():
+    st = np.r_[np.cumsum(np.full((40, 12), 1.0), 0), np.full((60, 12), 40.0)]  # moving 1 deg / frame, then still
+    t = still_time(st, fps=10, win_s=1.0)
+    # still from frame 47 on: the window 37..47 holds 38, 39, 40 (the last approach steps fit in the 3 deg box)
+    assert t[46] == 0 and t[47] == 0.1 and abs(t[-1] - 5.3) < 1e-9, (t[46], t[47], t[-1])
     v = np.r_[np.linspace(0, 1, 20), np.full(10, 1.0), np.linspace(1, 2, 10)]
     g = gain(v, h=5)
     assert g[0] > 0 and g[-1] == 0
@@ -395,6 +430,7 @@ if __name__ == "__main__":
     ap.add_argument("--selfcheck", action="store_true")
     ap.add_argument("--back", action="store_true", help="with --finish: add the reversed approaches (raw-v9-back)")
     ap.add_argument("--label_back", action="store_true")
+    ap.add_argument("--decay", metavar="SET", help="write sarm_progress_decay.parquet into a finished set")
     x = ap.parse_args()
     if x.selfcheck:
         selfcheck()
@@ -406,3 +442,5 @@ if __name__ == "__main__":
         label_back()
     if x.finish:
         finish(back=x.back)
+    if x.decay:
+        write_decay(x.decay)
