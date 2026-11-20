@@ -1,6 +1,7 @@
 # v9: learning from the robot's own rollouts with an honest progress
 
-中文：[README.zh.md](README.zh.md)
+中文：[README.zh.md](README.zh.md) · Design, related work, evidence and pre-registered expectations:
+[`docs/notes/v9_design_2026-11-20.md`](../../notes/v9_design_2026-11-20.md)
 
 **In short.** Almost every failure of the v6 models now ends the same way: the A arm hovers next to the tape with the gripper
 open and never closes (A对位). Feeding the model its progress did not change that, because the actions ignore the progress input.
@@ -104,6 +105,14 @@ Reference: `v6-flow_h16_s8` (same demos, no rollouts, no progress).
 - `STALL=resample:<s>` / `STALL=rewind:<s>` (environment variable, any model) / `STALL=learned:<s>` (advback): see `StallGuard`. `STALL_BOX` (3°),
   `STALL_REWIND_S` (1.5 s), `STALL_MAX` (3) adjust it; triggers are listed in `stalls.csv` of the eval recording.
 - v9 models print `[v9] progress` and log it in `stages.csv` (pred = stage, progress = v / 9).
+
+## Gates before the robot
+
+[`examples/xlerobot/gate_v9.py`](../../../examples/xlerobot/gate_v9.py): same observation, same noise, only the indicator changed
+(good ↔ bad, back ↔ good) on stall frames of held-out failed trials. Thresholds fixed in the script before any result: G1 adv
+(effect / noise ≥ 3, close(good) − close(bad) ≥ 0.10, close(good, w = 2) ≥ 0.22), G2 back (effect / noise ≥ 3, toward the start
+pose ≥ 70%), G5 best-of-N (corr ≤ −0.2, best ≥ 1.5 × random). `--selfcheck`: a model blind to its indicator must fail.
+`STALL=ask:<s>` (with `--takeover=true`) rings and asks for a takeover when the robot stalls, to collect recoveries.
 
 ## Offline checks before the robot
 

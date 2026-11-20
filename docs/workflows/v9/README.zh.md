@@ -1,6 +1,7 @@
 # v9：用诚实的进度，从机器人自己的评测试次里学
 
-English: [README.md](README.md)
+English: [README.md](README.md) · 设计、相关工作、证据和预先写下的预期：
+[`docs/notes/v9_design_2026-11-20.zh.md`](../../notes/v9_design_2026-11-20.zh.md)
 
 **一句话。** v6 系列模型现在几乎所有失败都是同一个样子：A 臂停在胶带旁边，夹爪张开，始终不合（A对位）。把进度喂给模型没有改变这一点，
 因为动作根本不看进度输入。v9 让进度只作为模型**预测**的输出；给 216 个实机评测试次的每一帧标上诚实的进度（机器人原地悬停时进度不涨），
@@ -94,6 +95,13 @@ English: [README.md](README.md)
 - `STALL=resample:<秒>` / `STALL=rewind:<秒>`（环境变量，任何模型）/ `STALL=learned:<秒>`（advback）：见 `StallGuard`。`STALL_BOX`（3°）、`STALL_REWIND_S`（1.5 秒）、
   `STALL_MAX`（3 次）可调；触发记录在评测录像的 `stalls.csv`。
 - v9 模型打印 `[v9] progress`，并记到 `stages.csv`（pred = 阶段，progress = v / 9）。
+
+## 上实机前的验收
+
+[`examples/xlerobot/gate_v9.py`](../../../examples/xlerobot/gate_v9.py)：在留出失败试次的卡住帧上，同一观测、同一噪声，只改指示（好 ↔ 坏、后退 ↔ 好）。
+阈值在任何结果之前写死在脚本里：G1 adv（效果 / 噪声 ≥ 3，合爪(好) − 合爪(坏) ≥ 0.10，合爪(好, w = 2) ≥ 0.22），G2 后退（效果 / 噪声 ≥ 3，
+朝起始姿态 ≥ 70%），G5 best-of-N（相关 ≤ −0.2，最佳 ≥ 1.5 × 随机）。`--selfcheck`：对指示视而不见的模型必须判不过。
+`STALL=ask:<秒>`（配合 `--takeover=true`）在机器人卡住时响铃请求接管，用来收集恢复数据。
 
 ## 上实机前的离线检查
 
