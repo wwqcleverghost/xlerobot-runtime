@@ -79,6 +79,7 @@ English: [README.md](README.md)
 | `flow:v9negmask` | `v9-flow_h16_s8_negmask` | 全部 | 失败只教进度（你的屏蔽想法） |
 | `flow:v9rabc` | `v9-flow_h16_s8_rabc` | 示范 + 成功的评测试次 | 用诚实进度做 RA-BC（往后看 90 帧，κ 0.15） |
 | `flow:v9advdemo` | `v9-flow_h16_s8_adv_demo` | 只有示范 | 不加评测试次的优势条件：评测试次本身重不重要 |
+| `flow:v9advr2` | `v9-flow_h16_s8_adv_r2` | 全部 | `adv` 换一个随机种子：离线数字单靠偶然会差多少 |
 
 参照：`v6-flow_h16_s8`（同样的示范，没有评测试次，没有进度）。
 

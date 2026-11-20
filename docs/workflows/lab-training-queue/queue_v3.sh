@@ -46,7 +46,8 @@
 #   flow:v9<variant>     v9 (docs/workflows/v9) on v9-handover-curated-rollouts = v6 demos + eval rollouts, the 9 progress dims
 #                        predicted after the actions (no progress input): prog = demos + successful rollouts; adv = all, with
 #                        the advantage indicator (RECAP / CFGRL); negmask = all, joints of neg frames masked; rabc = demos +
-#                        successful rollouts with RA-BC on the honest progress; advdemo = adv on the demos only
+#                        successful rollouts with RA-BC on the honest progress; advdemo = adv on the demos only;
+#                        advr2 = adv with another seed (v9-flow_h16_s8_adv_r2)
 # Run detached (no tmux on the lab computer):
 #   setsid nohup bash ~/wwq/queue_v3.sh flow flow:sepenc >> ~/wwq/logs/queue_v3.log 2>&1 < /dev/null &
 W=${WQ:-$HOME/wwq}  # server1/server2 keep everything on /media/data/wwq: WQ=/media/data/wwq
@@ -99,15 +100,17 @@ for job in "$@"; do
       policy=("${FLOW[@]}" --policy.progress_check_weight=1.0 --policy.progress_check_only=true
         --policy.progress_check_mix=0.$mix) ;;
     flow:v8stage) name=v8-flow_h16_s8_stagelabel data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
-    flow:v9prog|flow:v9adv|flow:v9negmask|flow:v9rabc|flow:v9advdemo)
+    flow:v9prog|flow:v9adv|flow:v9negmask|flow:v9rabc|flow:v9advdemo|flow:v9advr2)
       m=${job#flow:v9} data=v9-handover-curated-rollouts steps=140000 keep=3 policy=("${FLOW[@]}" --policy.progress_pred_dims=9)
       name=v9-flow_h16_s8_${m/advdemo/adv_demo}
+      name=${name/advr2/adv_r2}
       case $m in
         prog) eps=succ ;;
         adv) policy+=(--policy.adv_cond=true) ;;
         negmask) policy+=(--policy.neg_action_mask=true) ;;
         rabc) eps=succ policy+=(--use_rabc=true --rabc_lookahead_max=90 --rabc_kappa=0.15) ;;
         advdemo) eps=demo policy+=(--policy.adv_cond=true) ;;
+        advr2) policy+=(--policy.adv_cond=true --seed=2000) ;;  # adv with another seed: the noise floor of the comparisons
       esac ;;
     flow:v6ft) name=v6ft_corrections_flow_h16_s8 data=v6-corrections root=$W/data/v6-corrections-v6stats steps=8000 save=2000
       base=v6_flow_h16_s8 policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model

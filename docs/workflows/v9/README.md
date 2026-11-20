@@ -88,6 +88,7 @@ All: FLOW h16 s8, 140K steps, batch 24, from scratch, progress dims predicted (`
 | `flow:v9negmask` | `v9-flow_h16_s8_negmask` | all | failures teach only progress (the user's masking idea) |
 | `flow:v9rabc` | `v9-flow_h16_s8_rabc` | demos + successful rollouts | RA-BC with the honest progress (lookahead 90, κ 0.15) |
 | `flow:v9advdemo` | `v9-flow_h16_s8_adv_demo` | demos only | advantage conditioning without rollouts: do the rollouts matter? |
+| `flow:v9advr2` | `v9-flow_h16_s8_adv_r2` | all | `adv` with another seed: how much the offline numbers move by chance |
 
 Reference: `v6-flow_h16_s8` (same demos, no rollouts, no progress).
 
