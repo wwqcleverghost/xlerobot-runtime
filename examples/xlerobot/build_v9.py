@@ -21,6 +21,13 @@ usage (server2: HOME with .cache/huggingface/lerobot -> $HF_HOME/lerobot, PYTHON
   python examples/xlerobot/trim_stagnant_frames.py --spec outputs/v9/spec.json --dst wwqcleverghost/raw-v9-build
   python examples/xlerobot/build_v9.py --finish           # -> wwqcleverghost/v9-handover-curated-rollouts
   python examples/xlerobot/build_v9.py --selfcheck
+"back" variant (the learned retreat, adv_back): --label_back writes outputs/v9/spec_back.json = every demo's A前往 + A对位
+frames played backwards (from the pre-grasp pose back to the start); label adv = 2, progress falling. Their actions are rewritten
+from the state BACK_LAG frames later in reversed time (recorded actions lead the state in forward time, so reversed they would
+trail it).
+  python examples/xlerobot/build_v9.py --label_back
+  python examples/xlerobot/trim_stagnant_frames.py --spec outputs/v9/spec_back.json --dst wwqcleverghost/raw-v9-back
+  python examples/xlerobot/build_v9.py --finish --back    # raw-v9-build + raw-v9-back -> v9-handover-curated-rollouts-back
 """
 import argparse
 import json
@@ -50,6 +57,8 @@ H = 30       # look-ahead frames of the gain (1 s at 30 fps; evals really run ~2
 Q = 0.3      # eps = this quantile of the demos' gain per stage
 EPS_MIN = 0.02
 CAP, TAIL = 150, 15
+BACK_LAG = 8  # frames (~250 ms servo lag at 30 fps, memory servo-tracking-lag)
+BACK_MIN = 30  # shortest approach worth reversing
 
 
 def lerobot_home():
@@ -138,22 +147,51 @@ def keep_mask(adv, cap=CAP, tail=TAIL):
     return keep
 
 
-def label():
+def demo_labels():
+    """(joint std, {ep: (features, fine9 stage)}, {ep: road progress}) of the demos (hand-set stage starts included)."""
     import server
     import stage_progress_cum
-    from stage_labels import STAGES
 
-    notes = json.loads((REPO / "examples/xlerobot/dataset_labels.json").read_text())
     std = np.array(json.loads((server.root_of(DEMOS) / "meta/stats.json").read_text())["observation.state"]["std"])[:12]
-
-    # demos: fine9 + hand edits, road progress
     o, f9 = server.load(DEMOS), server.fine9_of(DEMOS)
     demo = {}
     for ep in o["eps"].index:
         _, s = server.ep_arrays(o, ep)
         lab = np.asarray(f9(ep))
         demo[int(ep)] = (features(s, std, not stage_progress_cum.b_is_left(s, lab)), lab)
-    road = stage_progress_cum.progress(demo)["road"]
+    return std, demo, stage_progress_cum.progress(demo)["road"]
+
+
+def label_back():
+    """spec_back.json + labels_back.npz: every demo's approach (stages 0-1) reversed, adv 2, progress falling."""
+    import server
+
+    _, demo, road = demo_labels()
+    segs, back = {}, {}
+    for ep in sorted(demo):
+        lab = demo[ep][1]
+        b = int(np.argmax(lab >= 2)) if (lab >= 2).any() else 0
+        if b < BACK_MIN:
+            continue
+        segs[str(ep)] = [[0, b]]
+        back[f"back|{ep}|lab"], back[f"back|{ep}|p"] = lab[:b][::-1], road[ep][:b][::-1]
+        back[f"back|{ep}|v"] = back[f"back|{ep}|lab"] + back[f"back|{ep}|p"]
+        back[f"back|{ep}|adv"], back[f"back|{ep}|neg"] = np.full(b, 2, np.int8), np.zeros(b, np.int8)
+        back[f"back|{ep}|meta"] = np.array([True, True])
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "spec_back.json").write_text(json.dumps([{"repo": f"{OWNER}/{DEMOS}", "root": str(server.root_of(DEMOS)),
+                                                     "note": "v9 back: demo approaches reversed", "segments": segs,
+                                                     "reverse": True}], indent=1, ensure_ascii=False))
+    np.savez_compressed(OUT / "labels_back.npz", order=np.array([f"back|{e}" for e in segs]), **back)
+    print(f"back: {len(segs)} reversed approaches, {sum(v[0][1] for v in segs.values())} frames")
+
+
+def label():
+    import server
+    from stage_labels import STAGES
+
+    notes = json.loads((REPO / "examples/xlerobot/dataset_labels.json").read_text())
+    std, demo, road = demo_labels()
     ref = {g: (np.concatenate([demo[e][0][demo[e][1] == g] for e in demo]),
                np.concatenate([road[e][demo[e][1] == g] for e in demo])) for g in range(len(STAGES))}
     rows = {}
@@ -242,7 +280,15 @@ def label():
     print("\n".join(lines))
 
 
-def finish(raw=RAW, final=FINAL):
+
+def aggregate(parts, dst):
+    from lerobot.datasets.aggregate import aggregate_datasets
+
+    h = lerobot_home()
+    aggregate_datasets([f"{OWNER}/{p}" for p in parts], f"{OWNER}/{dst}", roots=[h / p for p in parts], aggr_root=h / dst)
+
+
+def finish(raw=RAW, final=FINAL, back=False):
     """Progress dims into the built set (action 12 -> 21, identity-normalised like add_stage_target.py --kind cumprog),
     frame_labels.parquet, sarm_progress.parquet (RA-BC), episodes_*.json, sources; written as a new dataset `final`."""
     import stage_progress_cum
@@ -250,8 +296,15 @@ def finish(raw=RAW, final=FINAL):
 
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    lab = np.load(OUT / "labels.npz")
+    lab = dict(np.load(OUT / "labels.npz"))
     order = [tuple(x.rsplit("|", 1)) for x in lab["order"]]
+    if back:  # main build + the reversed approaches, aggregated (no re-encoding)
+        bl = dict(np.load(OUT / "labels_back.npz"))
+        order += [tuple(x.rsplit("|", 1)) for x in bl.pop("order")]
+        lab.update(bl)
+        if not (lerobot_home() / f"{raw}-back").exists():
+            aggregate([raw, "raw-v9-back"], f"{raw}-back")
+        raw, final = f"{raw}-back", f"{final}-back"
     root, new_root = lerobot_home() / raw, lerobot_home() / final
     assert not new_root.exists(), f"{final} already exists"
     files = sorted(root.glob("data/*/*.parquet"))
@@ -259,12 +312,15 @@ def finish(raw=RAW, final=FINAL):
     allf = pd.concat(dfs)
     n_ep = allf.episode_index.nunique()
     assert n_ep == len(order), f"built {n_ep} episodes, labels have {len(order)}"
-    extra, fl = {}, []
+    extra, fl, back_act = {}, [], {}
     for i, (d, e) in enumerate(order):
         g = allf[allf.episode_index == i].sort_values("frame_index")
         k = f"{d}|{e}"
         assert len(g) == len(lab[f"{k}|v"]), f"episode {i} ({k}): {len(g)} frames built, {len(lab[k + '|v'])} labelled"
         extra[i] = stage_progress_cum.cumulative(lab[f"{k}|lab"].astype(int), lab[f"{k}|p"]).astype(np.float32)
+        if d == "back":  # reversed: the command = the state BACK_LAG frames later (the recorded one trails it now)
+            st = np.stack(g["observation.state"].to_numpy())
+            back_act[i] = st[np.minimum(np.arange(len(st)) + BACK_LAG, len(st) - 1)].astype(np.float32)
         demo, ok = lab[f"{k}|meta"]
         fl.append(pd.DataFrame(dict(index=g["index"].to_numpy(), episode_index=i, frame_index=g.frame_index.to_numpy(),
                                     source=d, source_episode=int(e), demo=int(demo), success=int(ok), v=lab[f"{k}|v"],
@@ -272,7 +328,8 @@ def finish(raw=RAW, final=FINAL):
     shutil.copytree(root / "videos", new_root / "videos", copy_function=os.link)
     shutil.copytree(root / "meta", new_root / "meta")
     for f, df in zip(files, dfs):
-        df["action"] = [np.r_[a, extra[int(e)][int(i)]].astype(np.float32) for a, e, i in zip(df["action"], df["episode_index"], df["frame_index"])]
+        df["action"] = [np.r_[back_act[int(e)][int(i)] if int(e) in back_act else a, extra[int(e)][int(i)]].astype(np.float32)
+                        for a, e, i in zip(df["action"], df["episode_index"], df["frame_index"])]
         out = new_root / f.relative_to(root)
         out.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(out, index=False)
@@ -308,7 +365,8 @@ def finish(raw=RAW, final=FINAL):
     new = LeRobotDataset(f"{OWNER}/{final}", root=new_root)
     act = np.stack(new.hf_dataset["action"])
     old = np.stack(LeRobotDataset(f"{OWNER}/{raw}", root=root).hf_dataset["action"])
-    assert np.array_equal(act[:, :n_act], old) and act.shape[1] == n_act + n
+    keep = ~np.isin(np.stack(new.hf_dataset["episode_index"]).reshape(-1), list(back_act))
+    assert np.array_equal(act[keep, :n_act], old[keep]) and act.shape[1] == n_act + n
     assert new[len(new) // 2]["action"].shape[-1] == n_act + n
     print(f"{final}: {new.meta.total_episodes} episodes, {new.meta.total_frames} frames; adv good {fl.adv.mean():.2f}, "
           f"neg {fl.neg.mean():.2f}; demo eps {int(per.demo.sum())}, successful eps {int(per.success.sum())}")
@@ -335,6 +393,8 @@ if __name__ == "__main__":
     ap.add_argument("--label", action="store_true")
     ap.add_argument("--finish", action="store_true")
     ap.add_argument("--selfcheck", action="store_true")
+    ap.add_argument("--back", action="store_true", help="with --finish: add the reversed approaches (raw-v9-back)")
+    ap.add_argument("--label_back", action="store_true")
     x = ap.parse_args()
     if x.selfcheck:
         selfcheck()
@@ -342,5 +402,7 @@ if __name__ == "__main__":
         download()
     if x.label:
         label()
+    if x.label_back:
+        label_back()
     if x.finish:
-        finish()
+        finish(back=x.back)

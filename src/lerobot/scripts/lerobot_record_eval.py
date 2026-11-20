@@ -472,6 +472,13 @@ def record_loop(
                 preprocessor.reset()
                 postprocessor.reset()
         elif policy is not None and preprocessor is not None and postprocessor is not None:
+            if guard is not None and guard.mode == "learned":  # [eval] StallGuard learned: plan with "back" for a while
+                cmd = guard.command()
+                if cmd != policy.diffusion.adv_command:  # switch: replan at once with the new indicator
+                    policy.diffusion.adv_command = cmd
+                    policy.reset()
+                    preprocessor.reset()
+                    postprocessor.reset()
             policy_obs = clip_state(observation_frame, state_range)
             if stage is not None:
                 policy_obs = {**policy_obs, OBS_ENV_STATE: stage_now}
@@ -711,19 +718,29 @@ class StallGuard:
     (the A对位 hover). Then:
       resample  replan from the current frame with fresh noise (policy reset);
       rewind    first drive back along the commands sent before the stall began, STALL_REWIND_S (1.5) seconds of them in
-                reverse (back the way the arm came), then replan: retreat and re-align (Rewind-IL, arXiv 2604.16683).
+                reverse (back the way the arm came), then replan: retreat and re-align (Rewind-IL, arXiv 2604.16683);
+      learned   (adv_back models) plan with the indicator "back" for STALL_REWIND_S seconds, then with "good" again: the
+                model's own learned retreat (reversed approaches in training).
     At most STALL_MAX (3) times per trial, the next one at least <seconds> after the last. Each trigger is listed in
     stalls.csv (episode, frame, mode); rewind frames are recorded like policy frames."""
 
     def __init__(self, spec: str, fps: int):
         mode, sec = spec.split(":")
-        assert mode in ("resample", "rewind"), f"STALL mode must be resample or rewind, got {mode}"
+        assert mode in ("resample", "rewind", "learned"), f"STALL mode must be resample, rewind or learned, got {mode}"
         self.mode, self.n, self.fps = mode, max(2, int(float(sec) * fps)), fps
         self.box = float(os.environ.get("STALL_BOX", 3.0))
         self.back = int(float(os.environ.get("STALL_REWIND_S", 1.5)) * fps)
         self.max = int(os.environ.get("STALL_MAX", 3))
         self.states, self.sent, self.prog, self.queue, self.log = [], [], [], [], []
         self.last = -10**9
+        self.back_left = 0  # learned: policy frames still to plan with "back"
+
+    def command(self) -> int:
+        """learned mode: the indicator for this frame (2 = back while backing, else 0 = good), counting down."""
+        if self.back_left > 0:
+            self.back_left -= 1
+            return 2
+        return 0
 
     def observe(self, state: np.ndarray, sent: dict | None, prog: float) -> None:
         """per policy frame: the measured arm joints, the command sent, the model's progress (stage units / 9, nan: none)."""
@@ -734,7 +751,7 @@ class StallGuard:
     def check(self, frame: int) -> bool:
         """True when it fires now (then `queue` holds the rewind commands, empty for resample)."""
         t = len(self.states)
-        if self.queue or t < self.n or len(self.log) >= self.max or t - self.last < self.n:
+        if self.queue or self.back_left or t < self.n or len(self.log) >= self.max or t - self.last < self.n:
             return False
         w = np.stack(self.states[-self.n:])
         if (w.max(0) - w.min(0)).max() >= self.box:
@@ -745,6 +762,8 @@ class StallGuard:
         onset = t - self.n
         if self.mode == "rewind":
             self.queue = [c for c in self.sent[max(0, onset - self.back):onset][::-1] if c is not None]
+        if self.mode == "learned":
+            self.back_left = self.back
         self.last = t
         self.log.append((frame, self.mode))
         print(f"[stall] frame {frame}: {self.mode}" + (f", {len(self.queue)} frames back" if self.queue else ""), flush=True)

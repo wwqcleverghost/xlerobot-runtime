@@ -220,10 +220,10 @@ class DiffusionModel(nn.Module):
         if self.config.env_state_feature:
             global_cond_dim += self.config.env_state_feature.shape[0]
 
-        # adv_cond: the [good, bad] indicator is added once, after the per-step features
-        self.unet = DiffusionConditionalUnet1d(
-            config, global_cond_dim=global_cond_dim * config.n_obs_steps + (2 if config.adv_cond else 0)
-        )
+        # adv_cond: the [good, bad(, back)] indicator is added once, after the per-step features
+        self.n_adv = (3 if config.adv_back else 2) if config.adv_cond else 0
+        self.adv_command = 0  # [eval] indicator to sample with: 0 good, 2 back (adv_back)
+        self.unet = DiffusionConditionalUnet1d(config, global_cond_dim=global_cond_dim * config.n_obs_steps + self.n_adv)
 
         if config.stage_head_weight:  # per observation step: state + image features -> stage logits
             n_stage = config.env_state_feature.shape[0]
@@ -382,8 +382,8 @@ class DiffusionModel(nn.Module):
             global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
 
         guide = None
-        if self.config.adv_cond:  # sample conditioned on "good"; with guidance > 1 also unconditioned (CFG)
-            good = global_cond.new_tensor([1.0, 0.0]).expand(batch_size, 2)
+        if self.config.adv_cond:  # sample conditioned on adv_command (good); with guidance > 1 also unconditioned (CFG)
+            good = F.one_hot(torch.tensor(self.adv_command), self.n_adv).to(global_cond).expand(batch_size, -1)
             none = torch.cat([global_cond, torch.zeros_like(good)], -1)
             global_cond = torch.cat([global_cond, good], -1)
             if self.config.adv_guidance != 1.0:
@@ -566,7 +566,8 @@ class DiffusionModel(nn.Module):
             return self._progress_check_loss(obs_feats, true_s)
         if self.config.adv_cond:  # [good, bad] one-hot from the frame labels, zeroed with probability adv_drop
             assert "adv" in batch, "adv_cond needs the frame labels (lerobot_train adds batch['adv'] from frame_labels.parquet)"
-            ind = F.one_hot(1 - batch["adv"].long().view(-1), 2).to(global_cond.dtype)
+            adv = batch["adv"].long().view(-1)  # 1 good, 0 bad, 2 back -> one-hot index 0, 1, 2
+            ind = F.one_hot(torch.where(adv == 2, 2, 1 - adv), self.n_adv).to(global_cond.dtype)
             keep = torch.rand(len(ind), 1, device=ind.device) >= self.config.adv_drop
             global_cond = torch.cat([global_cond, ind * keep], -1)
 

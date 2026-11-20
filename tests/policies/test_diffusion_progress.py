@@ -149,3 +149,36 @@ def test_stall_guard():
     for t in range(12):  # still, but the model's own progress keeps rising: not a stall
         r.observe(np.zeros(12), {"j": 0.0}, t * 0.02 / 9 * 9)
         assert not r.check(t)
+
+
+def test_v9_back():
+    """adv_back: a third indicator; sampling with adv_command 2 (back) runs, labels 0 / 1 / 2 all train."""
+    b = batch()
+    del b[OBS_ENV_STATE]
+    b[OBS_IMAGES] = torch.zeros(4, 2, 1, 3, 32, 32)
+    b["adv"] = torch.tensor([1, 0, 2, 2])
+    m = make_v9(adv_cond=True, adv_back=True)
+    assert m.compute_loss(b).isfinite()
+    m.eval()
+    for cmd in (0, 2):
+        m.adv_command = cmd
+        with torch.no_grad():
+            a = m.generate_actions({OBS_STATE: torch.zeros(1, 2, 12), OBS_IMAGES: torch.zeros(1, 2, 1, 3, 32, 32)})
+        assert a.shape == (1, 8, 21)
+
+
+def test_stall_guard_learned():
+    """STALL=learned:1 at 10 fps: after a stall the indicator is back (2) for STALL_REWIND_S (1.5 s = 15 frames), then good."""
+    import numpy as np
+
+    from lerobot.scripts.lerobot_record_eval import StallGuard
+
+    g = StallGuard("learned:1", 10)
+    fired = None
+    for t in range(40):
+        g.observe(np.zeros(12), {"j": 0.0}, float("nan"))
+        if g.check(t) and fired is None:
+            fired = t
+    assert fired == 9 and g.back_left == 15
+    cmds = [g.command() for _ in range(20)]
+    assert cmds == [2] * 15 + [0] * 5

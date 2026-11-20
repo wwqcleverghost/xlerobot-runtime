@@ -19,7 +19,7 @@ from inside the kept range and joins the rest, e.g. to shorten a mid-episode pau
 "root" reads a local dataset directory instead of the HF cache. "segments": {"<episode>": [[start, end], ...]}
 keeps exactly those frame ranges [start, end) instead of trimming, each range as its own episode (e.g. human
 takeover corrections cut out of eval recordings, see takeover-corrections.json); "drop_seg": {"<episode>": [i, ...]}
-leaves out those segments (by index; the dataset viewer writes it).
+leaves out those segments (by index; the dataset viewer writes it); "reverse": true plays the segments backwards.
 "range": {"<episode>": [first, end]} keeps exactly frames [first, end) of that episode instead of the head/tail rule
 (it replaces keep_range, --to_target and start_s there; "cut" still applies). The dataset viewer
 (docs/workflows/dataset-viewer) writes it for every episode before a rebuild, so the build is what the page shows.
@@ -163,7 +163,10 @@ def main():
                     if i in source.get("drop_seg", {}).get(ep, []):
                         continue
                     assert 0 <= start < end <= hi - lo, (source["repo"], ep, start, end)
-                    episodes.append(list(range(lo + start, lo + end)))
+                    frames = list(range(lo + start, lo + end))
+                    # "reverse": true plays every segment backwards (v9 "back" episodes: an approach played in reverse;
+                    # build_v9.py rewrites their actions, the recorded ones lead the state in forward time)
+                    episodes.append(frames[::-1] if source.get("reverse") else frames)
         else:
             for ep, (lo, hi) in enumerate(bounds):
                 if ep in drop:

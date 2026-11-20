@@ -216,6 +216,10 @@ class DiffusionConfig(PreTrainedConfig):
     adv_cond: bool = False
     adv_drop: float = 0.3
     adv_guidance: float = 1.0
+    # A third indicator "back" (frame label adv = 2): approach segments played in reverse, the arm going back toward the start
+    # (build_v9.py --back). Sampling uses the policy's `adv_command` (0 good, 2 back; the eval's StallGuard with
+    # STALL=learned:<s> plans with back for a while after a stall, then with good again).
+    adv_back: bool = False
     # Joint dims of the loss masked on frames labelled neg = 1 (rollout frames that do not move the task on): those frames
     # teach only the progress dims, not their actions.
     neg_action_mask: bool = False
