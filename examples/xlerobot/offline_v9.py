@@ -5,7 +5,7 @@
            of N sampled chunks, the share that closes the A gripper (command 8 deg below its reading within the 8 executed
            steps), whether any does, and the share when the chunk is picked by its own predicted progress gain (best of N).
            The bottleneck: the robot hovers there with the gripper open.
-2. honest  every 10th frame of all held-out trials: the model's own progress at the planning frame (mean of N samples) vs the
+2. honest  every 20th frame of all held-out trials: the model's own progress at the planning frame (mean of N samples) vs the
            label v: mean abs error (stages); and how well its predicted gain over the chunk separates frames that move on
            (adv 1) from those that do not (AUC).
 Progress models of v6 (progress_mode) get the label v as their input s. adv models are run at each --guidance.
@@ -58,6 +58,7 @@ def sample(pol, pre, post, items, v_label, n, dev):
     """items: dataset items (2 obs steps). Returns joints (B, n, 8, 12) deg, progress now / next (B, n) in stages (nan: none)."""
     keys = list(pol.config.image_features)
     raw = {k: torch.stack([it[k] for it in items]).repeat_interleave(n, 0) for k in [OBS_STATE, *keys]}
+    raw = {k: v.float() / 255 if v.dtype == torch.uint8 else v for k, v in raw.items()}
     p = pre(raw)
     b = {OBS_STATE: p[OBS_STATE], OBS_IMAGES: torch.stack([p[k] for k in keys], -4)}
     c = pol.config
@@ -84,7 +85,7 @@ def main():
     ap.add_argument("--guidance", nargs="+", type=float, default=[1.0, 1.5, 2.0, 3.0])
     ap.add_argument("--n", type=int, default=16)
     ap.add_argument("--per", type=int, default=8, help="stuck frames per failed trial")
-    ap.add_argument("--every", type=int, default=10, help="progress frames: every n-th frame of each held-out trial")
+    ap.add_argument("--every", type=int, default=20, help="progress frames: every n-th frame of each held-out trial")
     ap.add_argument("--v9", default=str(Path(HF_LEROBOT_HOME) / "wwqcleverghost/v9-handover-curated-rollouts"))
     ap.add_argument("--out", default="outputs/v9/offline.csv")
     args = ap.parse_args()
@@ -114,7 +115,9 @@ def main():
             d = LeRobotDataset(f"wwqcleverghost/{ds}", root=root, delta_timestamps={k: [-1 / 30, 0] for k in [OBS_STATE, *CAMS]})
             sets[ds] = (d, d.meta.episodes["dataset_from_index"])
         d, lo = sets[ds]
-        return d[int(lo[ep]) + f]
+        it = d[int(lo[ep]) + f]
+        # kept for the next models: images as uint8 (float32 full frames of ~3000 items would take ~60 GB)
+        return {k: (it[k] * 255).round().to(torch.uint8) if k in CAMS else it[k] for k in [OBS_STATE, *CAMS]}
 
     cache = {}  # the dataset items, decoded once for all models
     rows = []
