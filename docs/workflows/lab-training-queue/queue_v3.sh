@@ -43,6 +43,10 @@
 #                        self also trains the progress check head (--policy.progress_check_weight)
 #   flow:v6prog<mode>rabc  v6-flow_h16_s8_prog<mode>_rabc: the same with RA-BC, progress delta = best progress within 3 s
 #   est:v6mix<NN>        v6-progcheck_mix<NN>: the progress check alone (separate estimator), guesses wrong NN% of the time
+#   flow:v9<variant>     v9 (docs/workflows/v9) on v9-handover-curated-rollouts = v6 demos + eval rollouts, the 9 progress dims
+#                        predicted after the actions (no progress input): prog = demos + successful rollouts; adv = all, with
+#                        the advantage indicator (RECAP / CFGRL); negmask = all, joints of neg frames masked; rabc = demos +
+#                        successful rollouts with RA-BC on the honest progress; advdemo = adv on the demos only
 # Run detached (no tmux on the lab computer):
 #   setsid nohup bash ~/wwq/queue_v3.sh flow flow:sepenc >> ~/wwq/logs/queue_v3.log 2>&1 < /dev/null &
 W=${WQ:-$HOME/wwq}  # server1/server2 keep everything on /media/data/wwq: WQ=/media/data/wwq
@@ -67,7 +71,7 @@ FLOW=(--policy.type=diffusion --policy.resize_shape=[240,320] --policy.crop_shap
 mkdir -p $W/logs $W/outputs
 cd $CODE || exit 1
 for job in "$@"; do
-  data=handover-perfect steps=100000 save=20000 base= ck=last keep= root= bs=24 workers=${NUM_WORKERS:-12}
+  data=handover-perfect steps=100000 save=20000 base= ck=last keep= root= bs=24 workers=${NUM_WORKERS:-12} eps=
   case $job in
     flow) name=dp_flow_h16_s8 policy=("${FLOW[@]}") ;;
     flow:strict) name=dp_flow_h16_s8_strict data=handover-perfect-strict policy=("${FLOW[@]}") ;;
@@ -95,6 +99,16 @@ for job in "$@"; do
       policy=("${FLOW[@]}" --policy.progress_check_weight=1.0 --policy.progress_check_only=true
         --policy.progress_check_mix=0.$mix) ;;
     flow:v8stage) name=v8-flow_h16_s8_stagelabel data=v8-handover2-stagelabel steps=140000 keep=3 policy=("${FLOW[@]}") ;;
+    flow:v9prog|flow:v9adv|flow:v9negmask|flow:v9rabc|flow:v9advdemo)
+      m=${job#flow:v9} data=v9-handover-curated-rollouts steps=140000 keep=3 policy=("${FLOW[@]}" --policy.progress_pred_dims=9)
+      name=v9-flow_h16_s8_${m/advdemo/adv_demo}
+      case $m in
+        prog) eps=succ ;;
+        adv) policy+=(--policy.adv_cond=true) ;;
+        negmask) policy+=(--policy.neg_action_mask=true) ;;
+        rabc) eps=succ policy+=(--use_rabc=true --rabc_lookahead_max=90 --rabc_kappa=0.15) ;;
+        advdemo) eps=demo policy+=(--policy.adv_cond=true) ;;
+      esac ;;
     flow:v6ft) name=v6ft_corrections_flow_h16_s8 data=v6-corrections root=$W/data/v6-corrections-v6stats steps=8000 save=2000
       base=v6_flow_h16_s8 policy=(--policy.path=$W/outputs/v6_flow_h16_s8/checkpoints/last/pretrained_model
       --policy.optimizer_lr=2e-5 --policy.do_mask_loss_for_padding=true) ;;
@@ -142,6 +156,8 @@ snapshot_download(repo, repo_type="dataset", revision=rev, local_dir=d)
 open(d + "/REVISION", "w").write(rev + "\n")' wwqcleverghost/$data $d || { echo "$(date '+%F %T') cannot download $data, skip $name"; continue; }
   fi
   [ $job = flow:v6rabc ] && [ -z "$DRY" ] && { $PY examples/xlerobot/stage_progress.py --root $d || continue; }
+  # v9 subsets: episodes_<eps>.json of the training set (build_v9.py)
+  [ -n "$eps" ] && policy+=("--dataset.episodes=$(tr -d ' \n' < $d/episodes_$eps.json 2>/dev/null || echo MISSING)")
   cmd=($PY -m lerobot.scripts.lerobot_train
     --dataset.repo_id=wwqcleverghost/$data --dataset.root=$d
     --dataset.image_transforms.enable=true --dataset.image_transforms.on_gpu=true

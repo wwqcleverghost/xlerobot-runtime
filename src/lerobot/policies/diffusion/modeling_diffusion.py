@@ -220,7 +220,10 @@ class DiffusionModel(nn.Module):
         if self.config.env_state_feature:
             global_cond_dim += self.config.env_state_feature.shape[0]
 
-        self.unet = DiffusionConditionalUnet1d(config, global_cond_dim=global_cond_dim * config.n_obs_steps)
+        # adv_cond: the [good, bad] indicator is added once, after the per-step features
+        self.unet = DiffusionConditionalUnet1d(
+            config, global_cond_dim=global_cond_dim * config.n_obs_steps + (2 if config.adv_cond else 0)
+        )
 
         if config.stage_head_weight:  # per observation step: state + image features -> stage logits
             n_stage = config.env_state_feature.shape[0]
@@ -267,7 +270,9 @@ class DiffusionModel(nn.Module):
         global_cond: Tensor | None = None,
         generator: torch.Generator | None = None,
         noise: Tensor | None = None,
+        guide: tuple[Tensor, float] | None = None,
     ) -> Tensor:
+        """guide = (unconditioned global_cond, weight w): FLOW velocity v_none + w * (v_cond - v_none) (adv_cond)."""
         device = get_device_from_parameters(self)
         dtype = get_dtype_from_parameters(self)
 
@@ -288,7 +293,14 @@ class DiffusionModel(nn.Module):
             n = self.num_inference_steps
             for k in range(n):
                 tau = torch.full(sample.shape[:1], 1 - k / n, dtype=sample.dtype, device=sample.device)
-                sample = sample - self._flow_velocity(sample, tau, global_cond) / n
+                if guide is None:
+                    v = self._flow_velocity(sample, tau, global_cond)
+                else:  # one U-Net pass for both conditions
+                    v_cond, v_none = self._flow_velocity(
+                        torch.cat([sample, sample]), torch.cat([tau, tau]), torch.cat([global_cond, guide[0]])
+                    ).chunk(2)
+                    v = v_none + guide[1] * (v_cond - v_none)
+                sample = sample - v / n
             if self.config.clip_sample:
                 sample = sample.clamp(-self.config.clip_sample_range, self.config.clip_sample_range)
             return sample
@@ -369,16 +381,37 @@ class DiffusionModel(nn.Module):
         else:
             global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
 
-        # run sampling
-        actions = self.conditional_sample(batch_size, global_cond=global_cond, noise=noise)
+        guide = None
+        if self.config.adv_cond:  # sample conditioned on "good"; with guidance > 1 also unconditioned (CFG)
+            good = global_cond.new_tensor([1.0, 0.0]).expand(batch_size, 2)
+            none = torch.cat([global_cond, torch.zeros_like(good)], -1)
+            global_cond = torch.cat([global_cond, good], -1)
+            if self.config.adv_guidance != 1.0:
+                guide = (none, self.config.adv_guidance)
 
-        # Extract `n_action_steps` steps worth of actions (from the current observation).
         start = n_obs_steps - 1
         end = start + self.config.n_action_steps
-        if self.config.progress_mode:
+        n_prog = self.config.progress_pred_dims or (self.config.progress_mode and self.config.env_state_feature.shape[0])
+        k = self.config.best_of_n
+        if k > 1:  # best of k: the chunk whose own predicted progress gains most from now to the next plan's frame
+            assert noise is None, "best_of_n draws its own noise"
+            rep = lambda x: x.repeat_interleave(k, 0)  # noqa: E731
+            guide = guide and (rep(guide[0]), guide[1])
+            actions = self.conditional_sample(batch_size * k, global_cond=rep(global_cond), guide=guide)
+            gain = (actions[:, end, -n_prog:] - actions[:, start, -n_prog:]).sum(-1).view(batch_size, k)
+            self.best_of_n_gain = gain  # (B, k), for eval logging
+            pick = gain.argmax(1) + torch.arange(batch_size, device=gain.device) * k
+            actions = actions[pick]
+        else:
+            actions = self.conditional_sample(batch_size, global_cond=global_cond, noise=noise, guide=guide)
+
+        # Extract `n_action_steps` steps worth of actions (from the current observation).
+        if n_prog:
             # [eval] the progress dims of the step after the executed ones = the time of the next plan's observation
-            # (the last executed step is one frame earlier); lerobot_record_eval.ProgressMemory feeds it back
-            self.progress_next = actions[:, end, -self.config.env_state_feature.shape[0]:]
+            # (the last executed step is one frame earlier); lerobot_record_eval.ProgressMemory feeds it back.
+            # progress_now = the sample's s at the planning frame (progress_pred_dims: the only progress estimate).
+            self.progress_next = actions[:, end, -n_prog:]
+            self.progress_now = actions[:, start, -n_prog:]
         actions = actions[:, start:end]
 
         return actions
@@ -531,6 +564,11 @@ class DiffusionModel(nn.Module):
             global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
         if self.config.progress_check_only:  # separate estimator: the check head alone
             return self._progress_check_loss(obs_feats, true_s)
+        if self.config.adv_cond:  # [good, bad] one-hot from the frame labels, zeroed with probability adv_drop
+            assert "adv" in batch, "adv_cond needs the frame labels (lerobot_train adds batch['adv'] from frame_labels.parquet)"
+            ind = F.one_hot(1 - batch["adv"].long().view(-1), 2).to(global_cond.dtype)
+            keep = torch.rand(len(ind), 1, device=ind.device) >= self.config.adv_drop
+            global_cond = torch.cat([global_cond, ind * keep], -1)
 
         # Forward diffusion.
         trajectory = batch[ACTION]
@@ -583,9 +621,14 @@ class DiffusionModel(nn.Module):
             in_episode_bound = ~batch["action_is_pad"]
             loss = loss * in_episode_bound.unsqueeze(-1)
 
-        if self.config.progress_mode:  # the 9 progress dims weigh as much as one joint together
-            n = true_s.shape[-1]
+        n = true_s.shape[-1] if self.config.progress_mode else self.config.progress_pred_dims
+        if n:  # the 9 progress dims weigh as much as one joint together
             loss = loss * torch.cat([loss.new_ones(loss.shape[-1] - n), loss.new_full((n,), 1 / n)])
+        if self.config.neg_action_mask:  # frames labelled neg teach only the progress dims
+            assert "neg" in batch, "neg_action_mask needs the frame labels (batch['neg'] from frame_labels.parquet)"
+            keep = (batch["neg"].view(-1, 1, 1) == 0).to(loss.dtype)
+            joint = torch.arange(loss.shape[-1], device=loss.device) < loss.shape[-1] - n
+            loss = torch.where(joint, loss * keep, loss)
         loss = loss.mean() if reduction == "mean" else loss.flatten(1).mean(1)
         if self.config.progress_check_weight:
             loss = loss + self.config.progress_check_weight * self._progress_check_loss(obs_feats, true_s)

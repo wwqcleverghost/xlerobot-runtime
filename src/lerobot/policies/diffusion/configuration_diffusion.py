@@ -202,6 +202,27 @@ class DiffusionConfig(PreTrainedConfig):
     progress_check_mix: float = 0.35
     progress_check_only: bool = False
 
+    # v9 (docs/workflows/v9): the last `progress_pred_dims` action dims are the cumulative stage progress s, predicted with
+    # the actions but never an input (train with observation.environment_state dropped). They weigh 1/n each in the loss;
+    # generate_actions keeps the sample's own s at the planning frame and at the next plan's frame (progress_now /
+    # progress_next). 0 = off.
+    progress_pred_dims: int = 0
+    # Advantage conditioning (RECAP, arXiv 2511.14759; CFGRL, arXiv 2505.23458): the U-Net also sees an indicator
+    # "this chunk moves the task on" as a one-hot [good, bad] (zeros = no indicator), from the training set's per-frame
+    # labels (frame_labels.parquet, column adv: 1 good / 0 bad, added to the batch by lerobot_train). With probability
+    # adv_drop the indicator is zeroed, so the same model is also the unconditioned policy. Sampling uses
+    # velocity = v_none + adv_guidance * (v_good - v_none): 1 = conditioned on good only (one pass), > 1 pushes further away
+    # from what the bad chunks did. FLOW only.
+    adv_cond: bool = False
+    adv_drop: float = 0.3
+    adv_guidance: float = 1.0
+    # Joint dims of the loss masked on frames labelled neg = 1 (rollout frames that do not move the task on): those frames
+    # teach only the progress dims, not their actions.
+    neg_action_mask: bool = False
+    # Sampling: draw best_of_n chunks and keep the one whose own predicted progress gains most from the planning frame to the
+    # next plan's frame (needs progress dims: progress_pred_dims or progress_mode). 1 = off.
+    best_of_n: int = 1
+
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
@@ -253,6 +274,12 @@ class DiffusionConfig(PreTrainedConfig):
             raise ValueError("Feedback denoising needs noise_scheduler_type='FLOW' and no react_blocks.")
         if not 1 <= self.feedback_every <= self.n_action_steps:
             raise ValueError(f"Need 1 <= feedback_every <= n_action_steps. Got {self.feedback_every=}")
+        if self.adv_cond and (self.noise_scheduler_type != "FLOW" or self.react_blocks is not None or self.feedback):
+            raise ValueError("adv_cond needs noise_scheduler_type='FLOW', no react_blocks and no feedback.")
+        if self.best_of_n > 1 and not (self.progress_pred_dims or self.progress_mode):
+            raise ValueError("best_of_n ranks chunks by their predicted progress: needs progress_pred_dims or progress_mode.")
+        if self.progress_pred_dims and self.progress_mode:
+            raise ValueError("progress_pred_dims (progress only predicted) and progress_mode (fed back) exclude each other.")
 
     def get_optimizer_preset(self) -> AdamConfig:
         return AdamConfig(

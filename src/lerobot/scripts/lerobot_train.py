@@ -16,9 +16,11 @@
 import logging
 import time
 from contextlib import nullcontext
+from pathlib import Path
 from pprint import pformat
 from typing import Any
 
+import pandas as pd
 import torch
 from accelerate import Accelerator
 from diffusers.training_utils import EMAModel
@@ -306,6 +308,18 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             lookahead_max=getattr(cfg, "rabc_lookahead_max", 0),
         )
 
+    # v9 per-frame labels (docs/workflows/v9): adv / neg columns of <dataset root>/frame_labels.parquet, looked up by the
+    # batch's global frame index, for --policy.adv_cond / --policy.neg_action_mask
+    frame_labels = None
+    if getattr(cfg.policy, "adv_cond", False) or getattr(cfg.policy, "neg_action_mask", False):
+        lab = pd.read_parquet(Path(cfg.dataset.root) / "frame_labels.parquet", columns=["index", "adv", "neg"])
+        frame_labels = {}
+        for c in ("adv", "neg"):
+            t = torch.full((int(lab["index"].max()) + 1,), -1, dtype=torch.long)
+            t[torch.as_tensor(lab["index"].to_numpy())] = torch.as_tensor(lab[c].to_numpy().astype("int64"))
+            frame_labels[c] = t.to(device)
+        logging.info(f"Frame labels: {len(lab)} frames, adv good {lab.adv.mean():.2f}, neg {lab.neg.mean():.2f}")
+
     step = 0  # number of policy updates (forward + backward + optim)
 
     if cfg.resume:
@@ -413,6 +427,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 frames = batch[key].to(device, non_blocking=True)
                 batch[key] = torch.stack([gpu_image_transforms(f) for f in frames])
         batch = preprocessor(batch)
+        if frame_labels is not None:
+            i = batch["index"].to(device).long().view(-1)
+            for c, t in frame_labels.items():
+                batch[c] = t[i]
+            assert (batch["adv"] >= 0).all(), "a frame without a label in frame_labels.parquet"
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
         train_tracker, output_dict = update_policy(

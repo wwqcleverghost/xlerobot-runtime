@@ -4,7 +4,7 @@ import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.diffusion.modeling_diffusion import DiffusionModel, DiffusionPolicy
-from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_STATE
+from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
 def make(**kw):
@@ -82,3 +82,48 @@ def test_eval_memory_deltainc():
     mem.update(p)  # the action queue is empty after reset = a chunk just ended
     assert np.allclose(mem(), [1, 1, 0.75, 0, 0, 0, 0, 0, 0])
 
+
+
+def make_v9(**kw):
+    """v9: progress only predicted (last 9 action dims), no environment_state input."""
+    cfg = DiffusionConfig(
+        input_features={OBS_STATE: PolicyFeature(FeatureType.STATE, (12,)),
+                        "observation.images.cam": PolicyFeature(FeatureType.VISUAL, (3, 32, 32))},
+        output_features={ACTION: PolicyFeature(FeatureType.ACTION, (21,))}, crop_shape=None, pretrained_backbone_weights=None,
+        horizon=16, n_action_steps=8, noise_scheduler_type="FLOW", down_dims=(32, 64), progress_pred_dims=9, **kw)
+    return DiffusionModel(cfg)
+
+
+def test_v9_losses():
+    b = batch()
+    del b[OBS_ENV_STATE]
+    b[OBS_IMAGES] = torch.zeros(4, 2, 1, 3, 32, 32)
+    b["adv"], b["neg"] = torch.tensor([1, 0, 1, 0]), torch.tensor([0, 1, 0, 1])
+    for kw in ({}, {"adv_cond": True}, {"neg_action_mask": True}, {"adv_cond": True, "adv_drop": 0.0}):
+        torch.manual_seed(0)
+        m = make_v9(**kw)
+        per = m.compute_loss(b, reduction="none")
+        assert per.shape == (4,) and per.isfinite().all()
+    # neg_action_mask drops the joint dims of neg frames only. (The progress dims of a neg frame still see its noisy joints
+    # in the U-Net input, so its loss is not independent of the joints: flow denoises all dims together.)
+    torch.manual_seed(1)
+    m = make_v9(neg_action_mask=True)
+    torch.manual_seed(2)
+    masked = m.compute_loss(b, reduction="none")
+    m.config.neg_action_mask = False
+    torch.manual_seed(2)
+    full = m.compute_loss(b, reduction="none")
+    assert torch.allclose(masked[[0, 2]], full[[0, 2]]) and (masked[[1, 3]] < full[[1, 3]]).all()
+
+
+def test_v9_sampling():
+    """CFG (adv_guidance != 1) and best-of-n keep the output shape; best-of-n keeps the chunk of the largest predicted gain."""
+    for kw in ({"adv_cond": True}, {"adv_cond": True, "adv_guidance": 2.0}, {"best_of_n": 5}, {"adv_cond": True, "adv_guidance": 1.5, "best_of_n": 3}):
+        m = make_v9(**kw).eval()
+        with torch.no_grad():
+            a = m.generate_actions({OBS_STATE: torch.zeros(2, 2, 12), OBS_IMAGES: torch.zeros(2, 2, 1, 3, 32, 32)})
+        assert a.shape == (2, 8, 21) and m.progress_next.shape == (2, 9) and m.progress_now.shape == (2, 9)
+        if kw.get("best_of_n", 1) > 1:
+            g = m.best_of_n_gain
+            got = (m.progress_next - m.progress_now).sum(-1)
+            assert torch.allclose(got, g.max(1).values, atol=1e-5)
