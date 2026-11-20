@@ -39,8 +39,11 @@ model's own progress can pick among sampled chunks, and a stall guard can retrea
 | A supervisor that notices the stall and goes back to re-align | Sentinel (task-progression failures), Rewind-IL (detect, respawn to a checkpoint), RaC (recover then correct) | `STALL=rewind:<s>`: after <s> s without motion or progress, replay the commands before the stall backwards, then replan |
 | Resampling gets it through | V-GPS, RoboMonkey (sample several, pick with a verifier) | `--policy.best_of_n=N`: keep the chunk whose own predicted progress gains most |
 
-Not done: a learned retreat (reversed approach segments with a "back" command). The scripted rewind tests the same idea first
-without new data; if it helps on the robot, the learned version is the next step.
+Learned retreat (`advback`): every demo's approach (A前往 + A对位) played backwards, from the pre-grasp pose to the start, is an
+episode with the indicator "back" (frame label adv = 2) and falling progress. Recorded actions lead the follower by ~250 ms, so
+played backwards they would trail it; their actions are the state 8 frames later in reversed time instead
+(`build_v9.py --label_back`, `--finish --back`; 58 segments, 10,709 frames). At inference `STALL=learned:<s>` plans with "back"
+for 1.5 s after a stall, then with "good" again. The scripted `STALL=rewind` tests the same idea without a new model.
 
 Masking has a limit: flow matching denoises joints and progress together, so a masked frame's noisy joints still reach the
 network input and still shape its progress output. The mask removes the joint targets, not every influence of the failed actions.
@@ -89,6 +92,7 @@ All: FLOW h16 s8, 140K steps, batch 24, from scratch, progress dims predicted (`
 | `flow:v9rabc` | `v9-flow_h16_s8_rabc` | demos + successful rollouts | RA-BC with the honest progress (lookahead 90, κ 0.15) |
 | `flow:v9advdemo` | `v9-flow_h16_s8_adv_demo` | demos only | advantage conditioning without rollouts: do the rollouts matter? |
 | `flow:v9advr2` | `v9-flow_h16_s8_adv_r2` | all | `adv` with another seed: how much the offline numbers move by chance |
+| `flow:v9advback` | `v9-flow_h16_s8_advback` | all + 58 reversed approaches (`-back` set) | `adv` plus a third indicator "back": the learned retreat |
 
 Reference: `v6-flow_h16_s8` (same demos, no rollouts, no progress).
 
@@ -97,7 +101,7 @@ Reference: `v6-flow_h16_s8` (same demos, no rollouts, no progress).
 - `--policy.adv_guidance=<w>` (adv models): 1 = conditioned on good; 1.5–3 pushes further from what bad chunks did.
 - `--policy.best_of_n=<N>` (any model with progress dims, v6 progress models too): N samples per plan, keep the best by its own
   predicted progress gain.
-- `STALL=resample:<s>` / `STALL=rewind:<s>` (environment variable, any model): see `StallGuard`. `STALL_BOX` (3°),
+- `STALL=resample:<s>` / `STALL=rewind:<s>` (environment variable, any model) / `STALL=learned:<s>` (advback): see `StallGuard`. `STALL_BOX` (3°),
   `STALL_REWIND_S` (1.5 s), `STALL_MAX` (3) adjust it; triggers are listed in `stalls.csv` of the eval recording.
 - v9 models print `[v9] progress` and log it in `stages.csv` (pred = stage, progress = v / 9).
 

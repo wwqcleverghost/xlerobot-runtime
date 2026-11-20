@@ -35,7 +35,10 @@ English: [README.md](README.md)
 | 一个监督者发现卡住就退回去重新对位 | Sentinel（任务进展失败）、Rewind-IL（检测后回到检查点）、RaC（先恢复再纠正） | `STALL=rewind:<秒>`：<秒> 内既不动、进度也不涨，就把卡住前发出的指令倒着重放，再重新规划 |
 | 重采样能过去 | V-GPS、RoboMonkey（多采样，用验证器挑） | `--policy.best_of_n=N`：留下自己预测的进度涨得最多的动作块 |
 
-没做的：学出来的后退（倒放前往段，配一个"后退"指令）。先用不需要新数据的脚本式倒退验证这个想法；如果实机有用，再做学习版。
+学出来的后退（`advback`）：每条示范的前往段（A前往 + A对位）倒着放，从抓取前的姿态回到起点，作为一个 episode，指示为"后退"
+（帧标签 adv = 2），进度下降。录制的动作比从臂领先约 250 ms，倒放后反而会落后；所以这些帧的动作改用倒放时间里 8 帧之后的状态
+（`build_v9.py --label_back`、`--finish --back`；58 段，10,709 帧）。推理时 `STALL=learned:<秒>` 在卡住后以"后退"规划 1.5 秒，
+再换回"好"。脚本式的 `STALL=rewind` 不需要新模型，可以先验证同一个想法。
 
 屏蔽有一个局限：flow matching 是把关节和进度一起去噪的，被屏蔽帧的带噪关节仍然进入网络输入，仍然影响它的进度输出。
 屏蔽去掉的是关节的学习目标，不是失败动作的全部影响。
@@ -80,6 +83,7 @@ English: [README.md](README.md)
 | `flow:v9rabc` | `v9-flow_h16_s8_rabc` | 示范 + 成功的评测试次 | 用诚实进度做 RA-BC（往后看 90 帧，κ 0.15） |
 | `flow:v9advdemo` | `v9-flow_h16_s8_adv_demo` | 只有示范 | 不加评测试次的优势条件：评测试次本身重不重要 |
 | `flow:v9advr2` | `v9-flow_h16_s8_adv_r2` | 全部 | `adv` 换一个随机种子：离线数字单靠偶然会差多少 |
+| `flow:v9advback` | `v9-flow_h16_s8_advback` | 全部 + 58 段倒放的前往（`-back` 数据集） | `adv` 加第三种指示"后退"：学出来的后退 |
 
 参照：`v6-flow_h16_s8`（同样的示范，没有评测试次，没有进度）。
 
@@ -87,7 +91,7 @@ English: [README.md](README.md)
 
 - `--policy.adv_guidance=<w>`（adv 模型）：1 = 以"好"为条件；1.5–3 离坏动作块更远。
 - `--policy.best_of_n=<N>`（带进度维的模型，包括 v6 的进度模型）：每次规划采 N 个，留自己预测的进度涨得最多的那个。
-- `STALL=resample:<秒>` / `STALL=rewind:<秒>`（环境变量，任何模型）：见 `StallGuard`。`STALL_BOX`（3°）、`STALL_REWIND_S`（1.5 秒）、
+- `STALL=resample:<秒>` / `STALL=rewind:<秒>`（环境变量，任何模型）/ `STALL=learned:<秒>`（advback）：见 `StallGuard`。`STALL_BOX`（3°）、`STALL_REWIND_S`（1.5 秒）、
   `STALL_MAX`（3 次）可调；触发记录在评测录像的 `stalls.csv`。
 - v9 模型打印 `[v9] progress`，并记到 `stages.csv`（pred = 阶段，progress = v / 9）。
 
