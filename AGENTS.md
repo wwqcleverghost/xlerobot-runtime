@@ -39,3 +39,4 @@
 - `docs/workflows/stage-labels/` — 逐帧阶段标签（9 阶段：A前往…复位）：事件定义、`fine9`（训练输入）/ `std9`（核对）、阈值和准确度；改阶段规则或用阶段做模型输入前先读。
   - 用 `*-stagelabel` 数据集训练的模型有输入 `observation.environment_state`：真机评测（`lerobot_record_eval.py`、`eval_remote_trials.py`）会**自动**开启实时阶段计算，启动时打印 `Stage input on`，需要两路腕部相机；没打印就是没开。
   - 改了 `examples/xlerobot/stage_labels.py` 的规则，已加过标签的数据集要用 `add_stage_labels.py --dataset <名字>-stagelabel` 重新计算，否则训练标签和评测时算的不一致。
+- `docs/workflows/v9/` — v9：v6 示范 + 评测试次（诚实进度、逐帧优势标签）训练；进度只预测不输入；优势条件 + 引导、失败帧屏蔽、RA-BC；推理时 best-of-N、卡住后重采样 / 倒退（`STALL=`）；离线检查 `offline_v9.py`。

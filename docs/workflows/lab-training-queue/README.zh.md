@@ -37,6 +37,8 @@ English: [README.md](README.md)
   `flow:v6prog<模式>`（delta / deltainc / self）= 阶段进度回喂：进度数组 s 既是输入也接在动作后面预测（`v6-flow_h16_s8_prog<模式>`，数据
   `v6-handover-curated-cumprog`），self 另带检查分支；`flow:v6prog<模式>rabc` 再加"往前看 3 秒最大进度"的 RA-BC；`est:v6mix<NN>` = 单独的进度估计器
   `v6-progcheck_mix<NN>`（40K 步）。见 `../stage-labels/`"阶段进度回喂"。
+  `flow:v9prog` / `v9adv` / `v9negmask` / `v9rabc` / `v9advdemo` = v9，数据 `v9-handover-curated-rollouts`（v6 示范 + 评测试次，进度只预测；
+  子集用数据集里的 `episodes_<succ|demo>.json`），见 [`../v9/`](../v9/README.zh.md)。
 - `finish_v2.sh` — 在 `data/handover2-trimmed-v2`（V4，50 个 episode）上完成 `d2t_*_v2` REACT run：用规范的数据集 ID 和 root 续训，
   或从头重训。
 - `prune_checkpoints.py <run-output-dir>` — 保留最后三个模型快照，只保留最新的完整训练状态。删除前先验证发布出去的
