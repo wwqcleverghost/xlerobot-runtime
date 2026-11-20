@@ -168,8 +168,8 @@ def main(args):
     print(f"{len(items)} stuck frames from {len({(d, e) for d, e, _ in picks})} held-out failed trials", flush=True)
     pol, pre, post = offline_v9.load_policy(args.model, torch.device("cuda"))
     res = {}
-    for i in range(0, len(items), 8):  # per batch of frames, then averaged (frames weigh equally)
-        r = measure(pol, pre, post, items[i:i + 8], start[i:i + 8], seed=i)
+    for i in range(0, len(items), args.batch):  # per batch of frames (x N samples), then averaged (frames weigh equally)
+        r = measure(pol, pre, post, items[i:i + args.batch], start[i:i + args.batch], seed=i)
         for k, v in r.items():
             res.setdefault(k, []).append(v)
     res = {k: float(np.nanmean(v)) for k, v in res.items()}
@@ -220,6 +220,7 @@ if __name__ == "__main__":
     ap.add_argument("--model")
     ap.add_argument("--v9", default=None)
     ap.add_argument("--out")
+    ap.add_argument("--batch", type=int, default=2, help="frames per forward pass (x 16 samples); 2 fits next to a training run")
     ap.add_argument("--selfcheck", action="store_true")
     a = ap.parse_args()
     if a.selfcheck:
