@@ -127,3 +127,25 @@ def test_v9_sampling():
             g = m.best_of_n_gain
             got = (m.progress_next - m.progress_now).sum(-1)
             assert torch.allclose(got, g.max(1).values, atol=1e-5)
+
+
+def test_stall_guard():
+    """STALL=rewind:1 at 10 fps: fires after 10 still frames, queues the 15 commands before the stall began, backwards."""
+    import numpy as np
+
+    from lerobot.scripts.lerobot_record_eval import StallGuard
+
+    g = StallGuard("rewind:1", 10)
+    for t in range(30):  # moving toward the tape: 4 deg per frame (the 3 deg box only holds still frames)
+        g.observe(np.full(12, 4.0 * t), {"j": float(t)}, float("nan"))
+        assert not g.check(t)
+    fired = []
+    for t in range(30, 45):  # hover
+        g.observe(np.full(12, 4.0 * 29), {"j": 29.0}, float("nan"))
+        fired.append(g.check(t))
+    assert fired.index(True) == 8 and sum(fired) == 1  # the last approach frame (t=29) + 9 hover frames are still
+    assert [c["j"] for c in g.queue] == [float(x) for x in range(28, 13, -1)]  # onset 29: commands 28 .. 14, backwards
+    r = StallGuard("resample:1", 10)
+    for t in range(12):  # still, but the model's own progress keeps rising: not a stall
+        r.observe(np.zeros(12), {"j": 0.0}, t * 0.02 / 9 * 9)
+        assert not r.check(t)

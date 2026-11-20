@@ -172,7 +172,6 @@ def label():
             ep = int(ep)
             if ep % 5 == 4:
                 holdout.append([ds, ep])
-                continue
             _, s = server.ep_arrays(o, ep)
             ok = bool(o["success"].get(ep, 0))
             end = int(ends.loc[ep, "end_frame"]) if ep in ends.index else len(s)
@@ -187,7 +186,7 @@ def label():
                 m = lab == g
                 p[m] = knn_mean(x[m], ref[g][0], ref[g][1], K) if len(ref[g][0]) else 0.0
             v = lab + p
-            rows[(ds, ep)] = dict(lab=lab, p=p, v=v, gain=gain(v), demo=False, success=ok, note_stage=ns)
+            rows[(ds, ep)] = dict(lab=lab, p=p, v=v, gain=gain(v), demo=False, success=ok, note_stage=ns, held=ep % 5 == 4)
     for r in rows.values():
         r["adv"] = (r["gain"] >= eps_stage[r["lab"]]).astype(np.int8)
         r["keep"] = np.ones(len(r["v"]), bool) if r["demo"] else keep_mask(r["adv"])
@@ -201,7 +200,7 @@ def label():
         eps = sorted(int(e) for e in server.load(ds)["eps"].index)
         rng, cut = {}, {}
         for ep in eps:
-            if (ds, ep) not in rows:
+            if (ds, ep) not in rows or rows[(ds, ep)]["held"]:
                 continue
             kp = rows[(ds, ep)]["keep"]
             last = int(np.flatnonzero(kp)[-1]) + 1
@@ -211,7 +210,7 @@ def label():
                 cut[str(ep)] = gaps
             order.append((ds, ep))
         spec.append({"repo": f"{OWNER}/{ds}", "root": str(server.root_of(ds)), "note": "eval rollouts",
-                     "drop": [e for e in eps if (ds, e) not in rows], "range": rng, "cut": cut})
+                     "drop": [e for e in eps if str(e) not in rng], "range": rng, "cut": cut})
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "spec.json").write_text(json.dumps(spec, indent=1, ensure_ascii=False))
     (OUT / "holdout.json").write_text(json.dumps(holdout))
@@ -222,6 +221,11 @@ def label():
             arr[f"{d}|{e}|{k}"] = r[k][r["keep"]]
         arr[f"{d}|{e}|meta"] = np.array([r["demo"], r["success"]])
     np.savez_compressed(OUT / "labels.npz", order=np.array([f"{d}|{e}" for d, e in order]), eps_stage=eps_stage, **arr)
+    # held-out trials: labels over all frames up to the task end (no cuts), for the offline checks (offline_v9.py)
+    np.savez_compressed(OUT / "labels_holdout.npz", eps_stage=eps_stage, **{
+        f"{d}|{e}|{k}": r[k] for (d, e), r in rows.items() if r.get("held") for k in ("lab", "p", "v", "adv")},
+        **{f"{d}|{e}|meta": np.array([False, r["success"]]) for (d, e), r in rows.items() if r.get("held")})
+    rows = {k: r for k, r in rows.items() if not r.get("held")}
     lines = [f"eps_stage (gain threshold per stage, stage units over {H} frames): {np.round(eps_stage, 3).tolist()}"]
     for name in [DEMOS, *EVALS]:
         rs = [r for (d, _), r in rows.items() if d == name]
@@ -297,7 +301,7 @@ def finish(raw=RAW, final=FINAL):
     per = fl.groupby("episode_index").agg(demo=("demo", "first"), success=("success", "first"))
     (new_root / "episodes_demo.json").write_text(json.dumps(per.index[per.demo == 1].tolist()))
     (new_root / "episodes_succ.json").write_text(json.dumps(per.index[per.success == 1].tolist()))
-    for f in ("sources.json", "spec.json", "holdout.json", "summary.txt"):
+    for f in ("sources.json", "spec.json", "holdout.json", "summary.txt", "labels_holdout.npz"):
         if (OUT / f).exists():
             shutil.copy(OUT / f, new_root / f"v9_{f}")
     # check: joints unchanged, progress dims carried, a frame with video still loads

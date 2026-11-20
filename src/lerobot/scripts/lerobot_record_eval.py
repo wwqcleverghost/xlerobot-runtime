@@ -391,6 +391,10 @@ def record_loop(
     last_cmd, stage_now, pred_stage = None, None, None
     # [eval] per-frame [frame, rule stage, model stage, prob, progress] of stage models, saved to stages.csv (save_stage_log)
     events["stage_log"] = log = []
+    # [eval] STALL=<resample|rewind>:<seconds>: what to do when the arms hover in place (StallGuard, docs/workflows/v9)
+    guard = StallGuard(os.environ["STALL"], fps) if policy is not None and os.environ.get("STALL") else None
+    events["stall_log"] = guard.log if guard is not None else []
+    guard_keys = [k for k in dataset.features[OBS_STATE]["names"] if "arm" in k] if guard is not None else []
     raw_hist = []  # [eval] previous two policy outputs, for smooth_arm_action
     state_range = train_state_range(preprocessor)
     events["takeover"] = False
@@ -461,6 +465,12 @@ def record_loop(
             command = {k: v + offset.get(k, 0.0) for k, v in leader.items()}
             act_processed_teleop = teleop_action_processor((command, obs))
             act_processed_policy = None
+        elif policy is not None and guard is not None and guard.queue:  # [eval] StallGuard rewind: the pre-stall commands, backwards
+            act_processed_policy = dict(guard.queue.pop(0))
+            if not guard.queue:  # back where the approach was: replan from the next frame with fresh noise
+                policy.reset()
+                preprocessor.reset()
+                postprocessor.reset()
         elif policy is not None and preprocessor is not None and postprocessor is not None:
             policy_obs = clip_state(observation_frame, state_range)
             if stage is not None:
@@ -489,6 +499,12 @@ def record_loop(
                 if pred != pred_stage:
                     print(f"[head]  {timestamp:6.2f}s  {pred}  p={float(head[0, pred]):.2f}", flush=True)
                 pred_stage = pred
+            elif getattr(policy.config, "progress_pred_dims", 0):  # [eval] v9: the chunk's own predicted s at this action
+                v = float(np.clip(extra, 0.0, 1.0).sum())
+                pred_now, prog_now = min(int(v), len(extra) - 1), v / len(extra)
+                if int(v * 10) != pred_stage:  # printed per 0.1 stage
+                    print(f"[v9]    {timestamp:6.2f}s  progress {v:.2f} / {len(extra)}", flush=True)
+                pred_stage = int(v * 10)
             elif len(extra) == 9:  # [eval] *-stagepred: the predicted stage one-hot after the joints, printed as 0-8 on change
                 pred = int(extra.argmax())
                 pred_now, prob_now = pred, float(extra[pred])
@@ -569,6 +585,13 @@ def record_loop(
 
         sent_action = robot.send_action(robot_action_to_send)
         last_cmd = dict(sent_action if sent_action is not None else robot_action_to_send)
+        if guard is not None and not human:
+            guard.observe(np.array([float(obs[k]) for k in guard_keys]), last_cmd, prog_now)
+            frame_no = dataset.episode_buffer["size"] if dataset is not None else len(guard.states)
+            if guard.check(frame_no) and guard.mode == "resample":
+                policy.reset()
+                preprocessor.reset()
+                postprocessor.reset()
 
         # Write to dataset
         if dataset is not None:
@@ -680,6 +703,65 @@ class ProgressMemory:
             self.shown = int(v * 10)
         v = float(self.s.sum())  # stage index + progress within it
         return min(int(v), len(self.s) - 1), v / len(self.s)
+
+
+class StallGuard:
+    """[eval] STALL=<mode>:<seconds> (docs/workflows/v9, off by default). The trial counts as stalled when for <seconds> no
+    arm joint has left a STALL_BOX (3 deg) box and the model's own progress, when it has one, has not risen by 0.1 stage
+    (the A对位 hover). Then:
+      resample  replan from the current frame with fresh noise (policy reset);
+      rewind    first drive back along the commands sent before the stall began, STALL_REWIND_S (1.5) seconds of them in
+                reverse (back the way the arm came), then replan: retreat and re-align (Rewind-IL, arXiv 2604.16683).
+    At most STALL_MAX (3) times per trial, the next one at least <seconds> after the last. Each trigger is listed in
+    stalls.csv (episode, frame, mode); rewind frames are recorded like policy frames."""
+
+    def __init__(self, spec: str, fps: int):
+        mode, sec = spec.split(":")
+        assert mode in ("resample", "rewind"), f"STALL mode must be resample or rewind, got {mode}"
+        self.mode, self.n, self.fps = mode, max(2, int(float(sec) * fps)), fps
+        self.box = float(os.environ.get("STALL_BOX", 3.0))
+        self.back = int(float(os.environ.get("STALL_REWIND_S", 1.5)) * fps)
+        self.max = int(os.environ.get("STALL_MAX", 3))
+        self.states, self.sent, self.prog, self.queue, self.log = [], [], [], [], []
+        self.last = -10**9
+
+    def observe(self, state: np.ndarray, sent: dict | None, prog: float) -> None:
+        """per policy frame: the measured arm joints, the command sent, the model's progress (stage units / 9, nan: none)."""
+        self.states.append(state)
+        self.sent.append(sent)
+        self.prog.append(prog)
+
+    def check(self, frame: int) -> bool:
+        """True when it fires now (then `queue` holds the rewind commands, empty for resample)."""
+        t = len(self.states)
+        if self.queue or t < self.n or len(self.log) >= self.max or t - self.last < self.n:
+            return False
+        w = np.stack(self.states[-self.n:])
+        if (w.max(0) - w.min(0)).max() >= self.box:
+            return False
+        p = np.array(self.prog[-self.n:])
+        if np.isfinite(p).all() and (p.max() - p[0]) * 9 >= 0.1:
+            return False
+        onset = t - self.n
+        if self.mode == "rewind":
+            self.queue = [c for c in self.sent[max(0, onset - self.back):onset][::-1] if c is not None]
+        self.last = t
+        self.log.append((frame, self.mode))
+        print(f"[stall] frame {frame}: {self.mode}" + (f", {len(self.queue)} frames back" if self.queue else ""), flush=True)
+        return True
+
+
+def save_stall_log(root: Path, episode_index: int, log: list) -> None:
+    """[eval] Append the stall triggers of a saved episode (StallGuard) to stalls.csv."""
+    if not log:
+        return
+    csv_path = Path(root) / "stalls.csv"
+    new_file = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(["episode", "frame", "mode"])
+        writer.writerows([episode_index, a, m] for a, m in log)
 
 
 def live_stage(policy):
@@ -1130,6 +1212,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                     save_evaluation_episode(dataset, success, cfg.policy.pretrained_path)
                     save_interventions(dataset.root, episode_index, spans)
                     save_stage_log(dataset.root, episode_index, events.pop("stage_log", []))
+                    save_stall_log(dataset.root, episode_index, events.pop("stall_log", []))
                     results.append(success)
                     print(f"Success rate: {sum(results)}/{len(results)} = {sum(results) / len(results):.0%}")
                     recorded_episodes += 1
